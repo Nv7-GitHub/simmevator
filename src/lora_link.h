@@ -87,6 +87,13 @@ void loraBringUp(const char *roleName);
 // Prints a RadioLib status code as a name where we know one.
 const char *loraStatusName(int16_t state);
 
+// How many times the settings above have had to be put back on a radio found
+// without them - a receive that would not re-arm, or a chip that came back
+// from a supply sag at power-on defaults. It should stay 0; a main is expected
+// to print it, because a count that climbs is the only outward sign of a
+// supply or wiring fault that otherwise reads as ordinary packet loss.
+uint32_t loraRecoveryCount();
+
 // ---------------------------------------------------------------------------
 // Transmit side - the car node
 // ---------------------------------------------------------------------------

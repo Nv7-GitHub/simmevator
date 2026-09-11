@@ -277,7 +277,9 @@ static DisplayUiState buildUiState(uint32_t now) {
   s.dist24hMiles =
       (gDist24hBaseM + (float)gFloorsSinceStats * gPitchM) / METRES_PER_MILE;
 
-  s.stateStale = streamStale(gHaveState, gLastStateMs, DISPLAY_STATE_STALE_MS, now);
+  // Both from the STATS clock: STATE stops whenever the car parks, so timing the
+  // dim against it would dim every screen through every idle period.
+  s.stateStale = streamStale(gHaveStats, gLastStatsMs, DISPLAY_DIM_STALE_MS, now);
   s.statsStale = streamStale(gHaveStats, gLastStatsMs, DISPLAY_STATS_STALE_MS, now);
   return s;
 }

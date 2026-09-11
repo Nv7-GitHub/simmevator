@@ -84,7 +84,7 @@ correction is the cheapest thing that recovers a packet chewed up by a fade.
 
 ### 1.1 Airtime, and how to re-cost a packet
 
-Airtime is the power budget. The car averages ~19 mA and every millisecond on
+Airtime is the power budget. The car averages ~23 mA and every millisecond on
 the air costs ~140 mA. Before adding a field to either format, run this:
 
 ```
@@ -128,7 +128,7 @@ What a step costs in current, at the spec §2.2 duty cycles and 140 mA:
 
 | change | added current |
 |---|---|
-| STATE 8 -> 10 bytes, every 2 s at 71.2% moving | **+3.3 mA** on a ~19 mA budget |
+| STATE 8 -> 10 bytes, every 2 s at 90% STATE-active | **+4.2 mA** on a ~23 mA budget |
 | STATS 24 -> 25 bytes, every 60 s | +0.15 mA |
 
 Sanity check on the same arithmetic against the spec's own line items:
@@ -647,7 +647,7 @@ reflash all of them.
 
 **The airtime bill.** Before adding a byte, check section 1.1. Today:
 
-- **STATE has exactly one free byte.** 8 or 9 bytes both cost 297 ms. The tenth byte costs 65.5 ms per packet, which at the 2 s cadence and 71.2% moving duty is **+3.3 mA on a ~19 mA budget** - roughly ten days off a two-month battery.
+- **STATE has exactly one free byte.** 8 or 9 bytes both cost 297 ms. The tenth byte costs 65.5 ms per packet, which at the 2 s cadence and the 90% STATE-active fraction is **+4.2 mA on a ~23 mA budget** - roughly nine days off an eight-week battery.
 - **STATS has none.** 24 bytes is the top of its 48-symbol step. Byte 25 costs 65.5 ms, but only 0.15 mA, because it goes out once a minute instead of thirty times.
 
 So: put a cheap field in STATS, not in STATE, unless it genuinely has to move at

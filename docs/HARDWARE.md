@@ -38,7 +38,7 @@ the note after the tables before you add anything back.
 | Hookup wire / JST leads | — | |
 
 No divider filter cap (oversampled in software instead), no buck input
-electrolytic (the node averages ~19 mA, so the module's own ceramics are
+electrolytic (the node averages ~23 mA, so the module's own ceramics are
 sufficient), and no inline fuse (the pack's BMS covers overcurrent). The
 enclosure is 3D printed.
 
@@ -71,7 +71,7 @@ The four things a reader usually expects to find in this list and does not:
 | left out | why |
 |---|---|
 | inline fuse | the pack's BMS is the overcurrent and undervoltage protection. It is inside the pack, on the cell side of the terminals, and it is the reason the pack has to be a BMS pack rather than four bare cells. |
-| buck input electrolytic | the node averages ~19 mA. The MP1584EN module's own input ceramics handle that; the electrolytic is there for modules running amps. |
+| buck input electrolytic | the node averages ~23 mA. The MP1584EN module's own input ceramics handle that; the electrolytic is there for modules running amps. |
 | filter cap across the divider bottom leg | the reading is taken once a minute off a rail that moves over hours. The filtering is done in software instead: 32 samples, median not mean (spec 3.2, `battery.h`). A median also throws away the occasional wild sample the S3's SAR ADC produces, which a capacitor would not. |
 | barrel jack, separate antennas, enclosure, display mounts | the Wio-SX1262 ships with its antenna; the enclosure and the ten mounts are 3D printed; the pack connects through spade terminals so it can come off for charging without a connector in the middle. |
 
@@ -202,7 +202,7 @@ of these two resistances: not to use the full scale, but to keep both ends of
 the pack's range comfortably inside the part of the range that behaves, with
 headroom at the top for a charger that overshoots.
 
-Divider draw is 12 µA at 14.6 V, which is 0.06% of the ~19 mA average the
+Divider draw is 12 µA at 14.6 V, which is 0.05% of the ~23 mA average the
 30-day budget is built on. That is why there is no switching MOSFET across it -
 the switch would cost more parts and more ways to fail than it saves.
 
@@ -269,7 +269,7 @@ loaded one. Re-measure once with the node running anyway, at the XIAO's 3V3 pad
 rather than at the buck, so the measurement includes your wiring.
 
 That same PWM-only behaviour is why the node's ~3 mA light-sleep current is
-served badly by this module. It runs ~80-85% at the ~19 mA average, which is
+served badly by this module. It runs ~80-85% at the ~23 mA average, which is
 what the 30-day budget in spec 2 assumes. A TPS62203 or MP2338 would recover a
 few days. Not required.
 
@@ -431,7 +431,7 @@ firmware starts complaining rather than somewhere with a nicer round percentage
 attached.
 
 Expect to charge roughly every two months if the node is behaving: spec 2
-budgets ~19 mA average at evening-peak traffic, which is ~68 days, against a
+budgets ~23 mA average at evening-peak traffic, which is ~56 days, against a
 30-day requirement.
 
 ---

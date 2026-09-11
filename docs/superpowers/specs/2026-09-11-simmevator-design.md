@@ -81,17 +81,50 @@ is far lower, but the budget below uses the peak figure.
 | STATE | car moving, or within 10 s of a stop | every 2 s, first packet fires immediately on motion onset |
 | STATS | always | every 60 s |
 
+The **STATE-active fraction is 0.90, not the 0.712 moving fraction.** The stream
+runs for `STATE_HOLD_AFTER_STOP_MS` = 10 s past every stop, which the trigger
+column above says and an earlier version of this table forgot. The hold is
+deliberate — a display should not go stale the instant the doors open, and the
+car frequently moves again within those 10 s — but it is airtime and it has to
+be paid for here.
+
 | line item | current |
 |---|---|
 | XIAO light-sleeping between samples | ~3 mA |
-| STATE: 297 ms / 2 s × 140 mA × 0.712 | ~15 mA |
+| STATE: 297 ms / 2 s × 140 mA × **0.90 active** | ~18.7 mA |
 | STATS: 494 ms / 60 s × 140 mA | ~1.2 mA |
 | divider + BMP390 | ~0.1 mA |
-| **total at evening-peak traffic** | **~19 mA → ~68 days** |
+| **total at evening-peak traffic** | **~23 mA → ~56 days** |
 
-140 mA is the SX1262 at +22 dBm (~118 mA) plus the ESP32-S3 awake. Deep sleep is
-impossible: the algorithm needs an unbroken 1 Hz stream. Light sleep between
-samples is what makes the baseline 3 mA instead of ~25 mA.
+140 mA is the SX1262 at +22 dBm (~118 mA) plus the ESP32-S3 awake **at 80 MHz**.
+That clock is not the board default — `TX_CPU_MHZ` pins it, because RadioLib
+busy-polls DIO1 for the whole 297 ms of every packet, so whatever the core is
+clocked at is spent for the entire airtime. At the default 240 MHz the core term
+roughly doubles and this table is wrong by ~8 mA. Deep sleep is impossible: the
+algorithm needs an unbroken 1 Hz stream. Light sleep between samples is what
+makes the baseline 3 mA instead of ~25 mA.
+
+56 days still clears the one-month requirement, with about 1.9× margin at the
+*peak* traffic rate — a real week including nights does better. But the margin is
+smaller than the 68 days an earlier version of this table claimed, and that
+figure should not be quoted.
+
+### 2.3 What is arithmetic and what is measured
+
+Everything above is **calculated, not measured.** No board has been on a meter.
+Three line items could each move the total and are not in the table because
+nobody knows their size yet:
+
+| unknown | why it is not costed |
+|---|---|
+| real light-sleep floor on a XIAO | the ~3 mA is the datasheet part. The board also carries a power LED and a charge IC. This is the least trustworthy number in the budget. |
+| PSRAM left initialised | `[env:elevator_tx]` inherits `BOARD_HAS_PSRAM`; the core powers 8 MB that nothing allocates from. Disabling it means fighting the prebuilt core's `CONFIG_SPIRAM`. |
+| USB-Serial-JTAG PHY | `Serial.begin()` powers the pad and nothing calls `Serial.end()`, so it stays up for the whole deployment. |
+| ADC analog block | `batteryBegin()`'s throwaway conversion creates a oneshot unit that is never released, holding the SAR block powered rather than only for 32 samples a minute. |
+
+The first hardware session should put a meter on the 3.3 V rail for an hour
+before anyone trusts the day count. If the floor comes back at 8 mA rather than
+3, the month still holds and the 56 days does not.
 
 If measured life falls short, the knobs in order of preference are: STATE cadence
 2 s → 3 s (−5 mA), TX power 22 → 20 dBm (−2 mA), parked heartbeat 60 s → 120 s
@@ -153,7 +186,7 @@ Feeding the 3V3 pad bypasses the XIAO's own LDO, which is the efficient path.
 contested. Unplug the battery before flashing.
 
 The MP1584 is PWM-only with no light-load PFM mode, so it is poor at the 3 mA
-sleep current but runs ~80–85% at the ~19 mA average, which is what §2 assumes. A
+sleep current but runs ~80–85% at the ~23 mA average, which is what §2 assumes. A
 TPS62203 or MP2338 would recover a few days; not required.
 
 **The 3D-printed enclosure must be vented.** A sealed box turns the barometer
@@ -201,7 +234,7 @@ nothing outside this repo is edited.
 | Hookup wire / JST leads | — | |
 
 No divider filter cap (oversampled in software instead), no buck input
-electrolytic (the node averages ~19 mA, so the module's own ceramics are
+electrolytic (the node averages ~23 mA, so the module's own ceramics are
 sufficient), and no inline fuse (the pack's BMS covers overcurrent). The
 enclosure is 3D printed.
 
@@ -379,8 +412,16 @@ claims.
 - Floor labels come from a compile-time table, `-DFLOOR_LABELS="1,2,...,10"`.
   Simmons serves floors 1–10 with no basement, so index *n* maps to label *n*,
   but the table is where a basement or a skipped floor would be handled.
-- **Staleness**: no STATE for 10 s dims the readout; no STATS for 180 s greys it
-  and turns the RGB LED amber, so a dead link is visible from the corridor.
+- **Staleness is measured against the STATS heartbeat, never against STATE.**
+  STATE only flows while the car moves (§2.2), so silence on it is the normal
+  parked condition — the floor shown is current, nothing is wrong. Timing the
+  dim against STATE, as an earlier version of this section did at 10 s, leaves
+  every screen dimmed through every idle period: most of a working day and all
+  of a night. So: **no STATS for 150 s dims** the readout (two missed heartbeats
+  plus margin — one miss must never dim it, since §9 says the mesh has no
+  delivery guarantee and a threshold that flapped on a single loss would have
+  ten screens blinking), and **no STATS for 180 s greys it out** and turns the
+  RGB LED amber, so a dead link is visible from the corridor.
 - The LDR on GPIO34 drives backlight PWM on GPIO21 for night dimming.
 - Distance is extrapolated locally between heartbeats from observed floor changes
   × the transmitted pitch, then corrected to the transmitter's figure on each

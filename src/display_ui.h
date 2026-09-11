@@ -241,11 +241,26 @@
 // around, so they live next to it rather than being open-coded in
 // floor_display.cpp.
 //
-// 10 s is five missed STATE packets at the 2 s moving cadence. 180 s is three
-// missed STATS heartbeats at 60 s, which is why a single dropped heartbeat
-// never greys a screen out.
-#ifndef DISPLAY_STATE_STALE_MS
-#define DISPLAY_STATE_STALE_MS 10000
+// Both thresholds are measured against the STATS heartbeat, and neither against
+// STATE. That is deliberate, and it is a correction to what spec 6 originally
+// said.
+//
+// STATE is only sent while the car is moving, plus a 10 s hold after it stops
+// (spec 2.2). So silence on STATE is the NORMAL parked condition - it means
+// nothing is happening, not that anything is wrong, and the floor on the screen
+// is perfectly current. Dimming on it, as the first version did at 10 s, left
+// every screen dimmed through every idle period: most of a working day, and all
+// of a night. The question a dimmed screen should answer is "am I still hearing
+// the transmitter", and the 60 s STATS heartbeat is the only thing that answers
+// it, because STATS goes out whether the car moves or not.
+//
+// 150 s is two missed heartbeats plus a margin. One miss must never dim a
+// screen: spec 9 is explicit that the flood mesh has no delivery guarantee, so
+// a single loss is expected and a threshold that flapped on it would have ten
+// screens blinking at each other. 180 s is three missed heartbeats, at which
+// point the link is not merely unlucky.
+#ifndef DISPLAY_DIM_STALE_MS
+#define DISPLAY_DIM_STALE_MS 150000
 #endif
 #ifndef DISPLAY_STATS_STALE_MS
 #define DISPLAY_STATS_STALE_MS 180000
@@ -277,9 +292,10 @@ struct DisplayUiState {
   float dist24hMiles;
   bool  distValid;
 
-  // No STATE for DISPLAY_STATE_STALE_MS: the readout dims. No STATS for
+  // No STATS for DISPLAY_DIM_STALE_MS: the readout dims. No STATS for
   // DISPLAY_STATS_STALE_MS: it greys out and the LED goes amber. statsStale
-  // implies the worse of the two.
+  // implies the worse of the two. Neither is driven by STATE - see the note on
+  // the thresholds above for why silence on STATE means nothing is wrong.
   bool stateStale;
   bool statsStale;
 };

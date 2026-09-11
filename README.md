@@ -102,9 +102,13 @@ Two changes fix it without making the display feel slower:
   constants were tuned for. Between samples the chip light-sleeps, which is the
   difference between a 3 mA baseline and a 25 mA one.
 
-That lands at roughly **19 mA average, about 68 days** on a 10 Ah LiFePO4 pack —
-and that figure uses the evening-peak traffic rate, so a real week including nights
-does better.
+That lands at roughly **23 mA average, about 56 days** on a 10 Ah LiFePO4 pack,
+using the evening-peak traffic rate — a real week including nights does better.
+
+That is arithmetic, not a measurement. No board has been on a meter yet, and the
+light-sleep floor is the number in it I would trust least: the ~3 mA is the
+datasheet figure, while the actual XIAO board also carries a power LED and a
+charge IC. The spec lists the four unmeasured draws and what to do about them.
 
 ### One correction to the radio settings
 

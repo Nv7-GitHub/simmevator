@@ -93,6 +93,28 @@
 #define SENSOR_RETRY_INTERVAL_MS 5000
 #endif
 
+// Core clock. The spec 2.2 transmit figure of 140 mA is the SX1262 at +22 dBm
+// plus an ~22 mA core, which is 80 MHz - not the 240 MHz the board default
+// leaves it at. RadioLib busy-polls DIO1 for the whole 297 ms of every packet,
+// so the clock the core happens to be at is spent for the entire airtime. 80 is
+// the floor: the USB-Serial-JTAG PHY stops working below it.
+#ifndef TX_CPU_MHZ
+#define TX_CPU_MHZ 80
+#endif
+
+// Backoff for an NVS that is failing every write. The first retry waits a
+// second, then it doubles to a minute - long enough that a dead partition costs
+// nothing, short enough that a transient recovers on its own.
+#ifndef NVS_FAIL_BACKOFF_MIN_MS
+#define NVS_FAIL_BACKOFF_MIN_MS 1000
+#endif
+#ifndef NVS_FAIL_BACKOFF_MAX_MS
+#define NVS_FAIL_BACKOFF_MAX_MS 60000
+#endif
+#ifndef NVS_FAIL_PRINT_LIMIT
+#define NVS_FAIL_PRINT_LIMIT 3
+#endif
+
 // Below this the entry and exit cost more than the sleep saves, so the loop
 // just falls through and arrives at the deadline a moment early.
 #define LIGHT_SLEEP_MIN_US 3000
@@ -131,6 +153,9 @@ static uint64_t lastFloorUs = 0;
 static uint64_t lastStateUs = 0;
 static uint64_t lastStatsUs = 0;
 static uint32_t lastRetryMs = 0;
+static uint32_t nvsFailBackoffMs = 0;   // 0 = healthy, no backoff in effect
+static uint32_t nvsLastFailMs    = 0;
+static uint32_t nvsFailCount     = 0;
 
 static uint8_t  stateSeq = 0;   // one counter per format: the two streams run at
 static uint8_t  statsSeq = 0;   // different cadences, so a shared seq would make
@@ -325,7 +350,24 @@ static void sendStats(uint64_t now) {
 // ---------------------------------------------------------------------------
 // The 4 Hz probe
 // ---------------------------------------------------------------------------
+// How often the barometer is read. 4 Hz exists solely to catch motion ONSET;
+// once the STATE stream is already running that job is done, and three of every
+// four wakeups would do nothing but read a sample the 1 Hz step never looks at.
+// At evening-peak traffic the hold is active ~90% of the time, so this is most
+// of the probe's wakeups. It returns to 4 Hz the moment the hold expires, which
+// is what keeps the next onset fast.
+static uint64_t probeIntervalUs() {
+  return (uint64_t)(holdActive ? FLOOR_SAMPLE_INTERVAL_MS
+                               : STILLNESS_PROBE_INTERVAL_MS) * US_PER_MS;
+}
+
 static void pushStill(double alt) {
+  // bmp390Read() calls a reading valid once the conversion returns, but the
+  // altitude on top of it is a powf over the pressure ratio and comes back
+  // non-finite if that ratio ever goes bad. One of those in the ring makes
+  // stdPopulation() non-finite for the next 1.25 s, which fails the stillness
+  // comparison and fires an onset packet for a car that never moved.
+  if (!isfinite(alt)) return;
   if (stillCount < FLOOR_STILL_WIN) {
     stillRing[stillCount++] = alt;
     return;
@@ -385,11 +427,15 @@ static void stepAlgorithm(uint64_t now) {
   bool wasErr    = sensorErr;
   int  wasFloor  = bc.floor;
   bool wasMoving = bc.moving;
-  sensorErr = false;
 
   bc = monitor.update(now / (double)US_PER_S, probeSample.altitudeM);
+  // The sample can reach here finite-looking and still be dropped inside
+  // update(), which holds the previous broadcast and raises its own flag.
+  // Reading that flag back is what puts a NaN altitude on the wire as
+  // sensorErr instead of reporting a healthy sensor over a frozen floor.
+  sensorErr = monitor.sensorError();
 
-  if (wasErr) {
+  if (wasErr && !sensorErr) {
     Serial.printf("[tx] sensor recovered at %.2f s\n", now / 1e6);
   }
   if (bc.moving) {
@@ -415,10 +461,42 @@ static void stepAlgorithm(uint64_t now) {
 
   // Offered once a second; the throttle inside decides whether this is the one
   // in three hundred that actually writes.
-  NvsModelStatus ns = nvsModelMaybeSave(millis(), &monitor);
-  if (ns != NVS_MODEL_SKIPPED) {
-    Serial.printf("[tx] nvs save: %s (write %lu)\n", nvsModelStatusName(ns),
-                  (unsigned long)nvsModelWriteCount());
+  //
+  // An NVS that is permanently unhealthy - a missing partition, a corrupt
+  // namespace - fails every single offer. Without the backoff below that is a
+  // full record write and a console line once a second for the life of the
+  // deployment: the write is wasted current, and the console becomes unreadable
+  // exactly when someone is trying to read it to find out what is wrong. So a
+  // failure doubles the retry gap up to a ceiling, and only the first few are
+  // printed. A success resets both.
+  if (nvsFailBackoffMs == 0 || millis() - nvsLastFailMs >= nvsFailBackoffMs) {
+    NvsModelStatus ns = nvsModelMaybeSave(millis(), &monitor);
+    if (ns == NVS_MODEL_SKIPPED) {
+      // Not an outcome, just the throttle declining. Leaves the backoff alone.
+    } else if (ns == NVS_MODEL_OK) {
+      if (nvsFailBackoffMs) {
+        Serial.printf("[tx] nvs recovered after %lu failures\n",
+                      (unsigned long)nvsFailCount);
+      }
+      nvsFailBackoffMs = 0;
+      nvsFailCount = 0;
+      Serial.printf("[tx] nvs save: %s (write %lu)\n", nvsModelStatusName(ns),
+                    (unsigned long)nvsModelWriteCount());
+    } else {
+      nvsLastFailMs = millis();
+      nvsFailBackoffMs = nvsFailBackoffMs ? nvsFailBackoffMs * 2
+                                          : NVS_FAIL_BACKOFF_MIN_MS;
+      if (nvsFailBackoffMs > NVS_FAIL_BACKOFF_MAX_MS) {
+        nvsFailBackoffMs = NVS_FAIL_BACKOFF_MAX_MS;
+      }
+      nvsFailCount++;
+      if (nvsFailCount <= NVS_FAIL_PRINT_LIMIT) {
+        Serial.printf("[tx] nvs save failed: %s (%lu, next retry in %lu ms)%s\n",
+                      nvsModelStatusName(ns), (unsigned long)nvsFailCount,
+                      (unsigned long)nvsFailBackoffMs,
+                      nvsFailCount == NVS_FAIL_PRINT_LIMIT ? " - silencing" : "");
+      }
+    }
   }
 }
 
@@ -426,7 +504,7 @@ static void stepAlgorithm(uint64_t now) {
 // Sleep
 // ---------------------------------------------------------------------------
 static uint64_t nextDeadline(uint64_t now) {
-  uint64_t d = lastProbeUs + (uint64_t)STILLNESS_PROBE_INTERVAL_MS * US_PER_MS;
+  uint64_t d = lastProbeUs + probeIntervalUs();
 
   uint64_t f = lastFloorUs + (uint64_t)FLOOR_SAMPLE_INTERVAL_MS * US_PER_MS;
   if (f < d) d = f;
@@ -475,6 +553,9 @@ static void sleepUntil(uint64_t deadline) {
 
 // ---------------------------------------------------------------------------
 void setup() {
+  // Before anything else: every current figure in spec 2.2 assumes this clock.
+  setCpuFrequencyMhz(TX_CPU_MHZ);
+
   Serial.begin(115200);
   uint32_t start = millis();
   while (!Serial && (millis() - start) < 3000) {
@@ -536,12 +617,18 @@ void loop() {
   uint64_t now = nowUs();
 
   if (!sensorUp) {
+    // Nothing probes while the sensor is down, but the probe deadline still
+    // has to move: nextDeadline() takes the earliest of them, and one stuck in
+    // the past makes it return `now` every pass. sleepUntil() then declines
+    // every nap and the node spins at full current between bring-up retries -
+    // the one state where it can least afford to.
+    (void)due(now, &lastProbeUs, probeIntervalUs());
     uint32_t nowMs = millis();
     if (nowMs - lastRetryMs >= SENSOR_RETRY_INTERVAL_MS) {
       lastRetryMs = nowMs;
       sensorUp = bmp390BringUp("ELEVATOR TX SENSOR RETRY");
     }
-  } else if (due(now, &lastProbeUs, (uint64_t)STILLNESS_PROBE_INTERVAL_MS * US_PER_MS)) {
+  } else if (due(now, &lastProbeUs, probeIntervalUs())) {
     probe(now);
   }
 

@@ -76,7 +76,14 @@
 
 // Five floors is the furthest any display sits from the bridge, so 8 leaves
 // slack for a path that has to detour around a dead node.
+//
+// Guarded because platformio.ini passes this same name as a -D flag on every
+// mesh environment. Unguarded, the header's definition is the one that lands
+// and the build flag is only a redefinition warning - changing the number in
+// platformio.ini would look like it worked and change nothing.
+#ifndef MESH_HOP_LIMIT
 #define MESH_HOP_LIMIT 8
+#endif
 
 // 32 is roughly a minute of STATE traffic at the 2 s cadence - long enough
 // that a frame arriving late by a few relay jitters is still recognised, short
