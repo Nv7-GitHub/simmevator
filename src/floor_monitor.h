@@ -131,8 +131,12 @@
 #define FLOOR_RESYNC_S 25.0
 
 // Still samples a dwell must hold before the landing counts on the odometer and
-// teaches the building model. 356 floor-to-floor moves in the reference capture,
-// of which 244 were served stops and 100 were coasted through.
+// teaches the building model. Replaying the reference capture through this port
+// gives 357 floor-to-floor moves, of which 255 were served stops and 102 were
+// coasted through. (ALGORITHM.md section 2 quotes 356 / 244 / 100 for the same
+// capture; those are the raw stream rather than the gap-filled one, and its two
+// parts do not sum to its total. The numbers here are the measured ones and do -
+// see docs/ALGORITHM_PORT.md.)
 #define FLOOR_CONFIRM_N 3
 
 // Running-mean gain for learned landing heights.
@@ -253,9 +257,11 @@ enum FloorDirection {
   FLOOR_DIR_DOWN = 2
 };
 
-// Everything the Python Broadcast carries, plus the three things the
+// Everything the Python Broadcast carries, plus the four things the
 // transmitter needs that an offline analysis did not: a live position, a
-// direction, and a 24 h odometer window.
+// direction, a 24 h odometer window, and a model-ready flag - the Python could
+// assume its capture was complete, whereas a node has to say when it has not
+// yet earned a floor to broadcast.
 //
 // Doubles are carried unrounded. The Python rounds inside _out() for its CSV;
 // here the formatting is the replay harness's business, and rounding on the way

@@ -2,7 +2,9 @@
 """Gap-fill the reference capture onto an even 1 Hz grid.
 
 The capture is a radio log, not a sensor log: 49 dropouts totalling 570 samples,
-worst case 41 s. The real node holds the BMP390 on its own I2C bus, so it never
+worst case a 41 s hole, which is 40 missing 1 Hz samples between the two real
+readings either side of it - the summary below counts the samples, so it prints
+40. The real node holds the BMP390 on its own I2C bus, so it never
 sees any of them - the gaps are an artefact of how the data reached the laptop.
 Replaying the capture as-is would therefore measure the port against a stream
 the firmware can never be handed, and the algorithm's stillness test is a

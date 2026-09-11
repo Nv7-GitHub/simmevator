@@ -4,8 +4,10 @@
 //
 // Deliberately free of any Arduino dependency so that the packet formats built
 // on top of it can be compiled and unit-tested on the host - see the `native`
-// environment in platformio.ini. Shared by ping_packet.h and baro_packet.h so
-// there is exactly one definition of the polynomial in the project.
+// environment in platformio.ini. mesh_packet.h is the only consumer here - the
+// two LoRa formats in elev_packet.h carry no application CRC, because the
+// SX1262's hardware CRC-16 has already rejected corrupt frames by the time
+// RadioLib hands one over.
 //
 
 #include <stddef.h>

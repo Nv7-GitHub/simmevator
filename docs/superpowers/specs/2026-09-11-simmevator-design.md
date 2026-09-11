@@ -345,7 +345,9 @@ treated as a cold boot.
 
 ### 5.2 The 24-hour odometer
 
-24 rolling one-hour buckets in RAM, mirrored to NVS. There is no RTC — buckets are
+24 rolling one-hour buckets in RAM. They are written into the saved record but
+deliberately never read back on restore: they are indexed by uptime and there is
+no RTC, so a restored bucket cannot be placed on any timeline. There is no RTC — buckets are
 indexed by `uptime / 3600 mod 24`, and advancing into a bucket clears it. "Last
 24 h" therefore means "the last 24 hourly buckets", which is what the display
 claims.
@@ -391,7 +393,9 @@ claims.
 ### 7.1 Host unit tests — `pio test -e native`
 
 - `test/test_elev_packet/` — round-trip every field of both formats at limits and
-  boundaries; truncated, wrong-tag, wrong-length, and corrupt-CRC inputs.
+  boundaries; truncated, wrong-tag and wrong-length inputs. No corrupt-CRC case:
+  neither LoRa format carries an application CRC (§4.1), so there is nothing for
+  a test to corrupt. That case lives in the mesh suite below.
 - `test/test_mesh_packet/` — wrap/unwrap, hop decrement, CRC rejection, dedup ring
   behaviour including `origSeq` wraparound.
 - `test/test_floor_monitor/` — synthetic lattice ascents/descents, door cycles

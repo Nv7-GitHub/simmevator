@@ -51,9 +51,11 @@
 #define VBAT_CAL_DEN 1
 #endif
 
-// Samples averaged per reading. 32 at the S3's ~100 ksps is under a
-// millisecond, and it buries the couple of LSBs of noise the ADC shows on a
-// static input well below the +-2-3% the divider tolerance already costs.
+// Samples per reading, reduced by MEDIAN rather than mean - see batteryReadMv.
+// There is no filter capacitor across the divider, so this is the whole filter.
+// 32 at the S3's ~100 ksps is under a millisecond, and it buries both the couple
+// of LSBs of noise the ADC shows on a static input and the occasional wild SAR
+// sample, well below the +-2-3% the divider tolerance already costs.
 #ifndef VBAT_SAMPLES
 #define VBAT_SAMPLES 32
 #endif
