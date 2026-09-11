@@ -120,7 +120,7 @@ belong to the radio.
 ```
   BATT+ ──[ R1 = 1 MΩ 1% ]──┬── D0 (GPIO1)
                             │
-                       [ R2 = 200 kΩ 1% ]   ‖  100 nF to GND
+                       [ R2 = 200 kΩ 1% ]
                             │
   BATT− ──────────────────── ┴── GND (common with XIAO GND)
 ```
@@ -130,8 +130,12 @@ ESP32-S3 ADC's linear region at 12 dB attenuation, which misbehaves below ~0.15 
 and above ~2.8 V. Divider draw is 12 µA — 0.06% of the budget, so no switching
 MOSFET.
 
-Read with `analogReadMilliVolts()` (applies the factory eFuse calibration),
-averaged over 32 samples, once per STATS packet. A one-point correction
+There is no filter capacitor across R2. The 12 V rail moves on a timescale of
+hours and the reading is taken once a minute, so the noise this leaves is
+rejected in software instead: oversample 32 times and take the median rather than
+the mean, which also discards the occasional outlier sample the S3's SAR ADC
+produces. Read with `analogReadMilliVolts()` (applies the factory eFuse
+calibration), once per STATS packet. A one-point correction
 `-DVBAT_CAL_NUM` / `-DVBAT_CAL_DEN` is set once against a DMM.
 
 LiFePO4 4S thresholds for the display: 13.3 V rested-full, 12.8 V nominal,
@@ -139,7 +143,10 @@ LiFePO4 4S thresholds for the display: 13.3 V rested-full, 12.8 V nominal,
 
 ### 3.3 Power chain
 
-`LiFePO4 4S 10 Ah → 1 A fuse → MP1584EN buck set to 3.3 V → XIAO 3V3 pad`.
+`LiFePO4 4S 10 Ah → spade terminals → MP1584EN buck set to 3.3 V → XIAO 3V3 pad`.
+
+The pack's own BMS provides the overcurrent and undervoltage protection, and the
+spade terminals are what let the pack come off the buck for charging.
 
 Feeding the 3V3 pad bypasses the XIAO's own LDO, which is the efficient path.
 **Do not connect USB and the buck at the same time** — the LDO output would be
@@ -149,8 +156,10 @@ The MP1584 is PWM-only with no light-load PFM mode, so it is poor at the 3 mA
 sleep current but runs ~80–85% at the ~19 mA average, which is what §2 assumes. A
 TPS62203 or MP2338 would recover a few days; not required.
 
-**The enclosure must be vented.** A sealed box turns the barometer into a
-thermometer and the system stops working.
+**The 3D-printed enclosure must be vented.** A sealed box turns the barometer
+into a thermometer and the system stops working. A small hole with a scrap of
+foam or filter cloth over it is enough - it needs to equalise on the timescale of
+seconds, not to breathe freely.
 
 ### 3.4 Bridge — floor 5, wall powered
 
@@ -181,20 +190,20 @@ nothing outside this repo is edited.
 | Part | Qty | Notes |
 |---|---|---|
 | Seeed XIAO ESP32S3 | 1 | |
-| Seeed Wio-SX1262 for XIAO | 1 | stacks onto the XIAO |
-| 915 MHz antenna | 1 | usually ships with the Wio-SX1262 |
+| Seeed Wio-SX1262 for XIAO | 1 | stacks onto the XIAO; ships with its 915 MHz antenna |
 | BMP390 breakout | 1 | Adafruit 4816 or equivalent |
 | LiFePO4 12.8 V 10 Ah pack with BMS | 1 | 4S; BMS required |
 | LiFePO4 charger, 14.6 V | 1 | a Li-ion or lead-acid charger will not terminate correctly |
 | MP1584EN buck module | 1 | set to 3.3 V **before** connecting the XIAO |
 | Resistor 1 MΩ 1% | 1 | divider top |
 | Resistor 200 kΩ 1% | 1 | divider bottom |
-| Ceramic cap 100 nF | 1 | across R2 |
-| Electrolytic 220 µF / 25 V | 1 | buck input bulk |
-| Inline fuse 1 A + holder | 1 | on BATT+ |
-| XT60 or 5.5 mm barrel pair | 1 | so the pack can be unplugged to charge |
-| Vented project enclosure | 1 | must not be airtight |
+| Spade terminal pair | 1 | so the pack can come off for charging |
 | Hookup wire / JST leads | — | |
+
+No divider filter cap (oversampled in software instead), no buck input
+electrolytic (the node averages ~19 mA, so the module's own ceramics are
+sufficient), and no inline fuse (the pack's BMS covers overcurrent). The
+enclosure is 3D printed.
 
 **Bridge (×1)**
 
@@ -202,7 +211,6 @@ nothing outside this repo is edited.
 |---|---|
 | Seeed XIAO ESP32S3 | 1 |
 | Seeed Wio-SX1262 for XIAO | 1 |
-| 915 MHz antenna | 1 |
 | USB-C 5 V adapter + cable | 1 |
 
 **Displays (×10)**
@@ -212,10 +220,12 @@ nothing outside this repo is edited.
 | ELEGOO ESP32 CYD 2.8" ILI9341 240×320 | 10 | sold in 2-packs → 5 packs |
 | USB-C 5 V / 1 A adapter | 10 | |
 | USB-C cable | 10 | |
-| Wall mount or stand | 10 | 3D-printable; STLs out of scope |
 
-**Totals:** 2 × XIAO ESP32S3 · 2 × Wio-SX1262 · 1 × BMP390 · 1 × battery +
-charger · 1 × buck · 10 × CYD · 11 × USB-C supplies.
+Mounts are 3D printed.
+
+**Totals to buy:** 2 × XIAO ESP32S3 · 2 × Wio-SX1262 · 1 × BMP390 · 1 × battery +
+charger · 1 × MP1584EN · 2 × resistors · 1 × spade pair · 10 × CYD · 11 × USB-C
+supplies. Enclosure and the ten display mounts are printed.
 
 ---
 
