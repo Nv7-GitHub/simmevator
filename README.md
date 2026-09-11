@@ -85,8 +85,11 @@ does not cut off everything above it.
 
 Airtime is the entire power budget. A LoRa packet at SF10 costs hundreds of
 milliseconds at about 118 mA, and the car in this building is *moving* 71% of an
-evening peak. A flat 2-second cadence is a 15–50% transmit duty cycle, and the
-month is gone in under three weeks.
+evening peak. Thirty days off a 10 Ah LiFePO4 pack means staying under 43 mA
+average. Send a 297 ms packet every 2 s around the clock and the radio alone is
+~21 mA; stay awake between samples and the baseline is ~25 mA instead of ~3 mA.
+Together that is ~47 mA - the requirement is missed before anything else has
+gone wrong.
 
 Two changes fix it without making the display feel slower:
 
@@ -94,8 +97,8 @@ Two changes fix it without making the display feel slower:
   so there is nothing to say. A 60-second heartbeat carries the slow statistics
   and proves the transmitter is alive.
 - **Detect motion at 4 Hz, run the algorithm at 1 Hz.** The stillness test gets
-  fast samples so motion onset is caught in about half a second and the first
-  packet fires immediately; the algorithm itself still sees the 1 Hz stream its
+  fast samples so motion onset is caught within 250 ms and the first packet
+  fires immediately; the algorithm itself still sees the 1 Hz stream its
   constants were tuned for. Between samples the chip light-sleeps, which is the
   difference between a 3 mA baseline and a 25 mA one.
 
@@ -182,8 +185,16 @@ pio run -e sim && .pio/build/sim/program sim/cpp_broadcasts.csv
 python3 sim/compare_to_python.py sim/cpp_broadcasts.csv
 ```
 
-This has to reproduce the reference numbers exactly — ten floors, 2.871 m pitch,
-356 floor-to-floor moves, 3409 m travelled — or the port is wrong.
+The gate that matters is the first line of the comparator's output: the C++
+floor sequence has to be identical to the Python's over all 10,950 samples. Five
+numeric gates bound the rest - ten floors, 2.871 m pitch ±1 mm, 3409 m travelled
+±0.1%, 357 floor-to-floor moves ±1, 255 confirmed stops ±1.
+
+`ALGORITHM.md` §5 reports 356 moves and 256 stops, and that is not a
+disagreement: §5 measured the raw capture, which is a radio log with 49 dropouts
+in it, while the replay runs the gap-filled 1 Hz stream the node would actually
+have been handed. The Python reference produces 357/255 on that input too.
+`docs/ALGORITHM_PORT.md` §6 works through it.
 
 ---
 

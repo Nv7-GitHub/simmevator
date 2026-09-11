@@ -54,7 +54,10 @@
 // floors below the boot landing and 31 above it, against a building of 10. An
 // index outside that range clamps and raises tableClamped rather than growing:
 // on a microcontroller the alternative to a bound is a crash, and an index that
-// far out is a runaway model rather than a real floor.
+// far out is a runaway model rather than a real floor. Reads do not clamp: a
+// lookup outside the range falls back to the nominal index x pitch, because
+// handing back a neighbouring floor's learned height is a wrong answer that
+// looks like a right one.
 //
 
 #include <math.h>
@@ -157,19 +160,30 @@
 
 // 24 rolling one-hour buckets. There is no RTC, so they are indexed by
 // uptime/3600 mod 24 and advancing into a bucket clears it: "last 24 h" means
-// "the last 24 hourly buckets", which is what the display claims.
+// "the last 24 hourly buckets", which is what the display claims. A reboot
+// starts the window empty - restore() does not load them, because uptime
+// restarts with it and a bucket from before the reboot cannot be aged.
 #define FLOOR_ODO_BUCKETS 24
 
 // Bumped whenever the layout of FloorModelState changes. nvs_model.cpp stores
 // this alongside a CRC and discards a record that disagrees.
-#define FLOOR_STATE_SCHEMA 1
+// 2: added tableClamped, so a runaway model cannot be laundered clean through
+// a save/restore cycle.
+#define FLOOR_STATE_SCHEMA 2
 
 // ===========================================================================
 // Small numeric helpers - each matching a specific numpy or Python behaviour
 // ===========================================================================
 namespace floor_detail {
 
+// Guards a caller that hands the bounds over in the wrong order - which here
+// means a negative dt reaching the +/-maxDrift*dt window. np.clip returns a_max
+// in that case and the Python therefore limps on; the plain two-comparison form
+// below would return whichever bound it tested first, which is a different
+// answer for the same input. Swapping costs one predictable branch and makes
+// the two agree on a case neither should ever see.
 static inline double clampD(double v, double lo, double hi) {
+  if (hi < lo) { double t = lo; lo = hi; hi = t; }
   return v < lo ? lo : (v > hi ? hi : v);
 }
 
@@ -301,9 +315,17 @@ struct FloorModelState {
   uint32_t trips;
   uint32_t stops;
 
+  // Written as part of the snapshot but deliberately not loaded - see restore().
   double   odoBuckets[FLOOR_ODO_BUCKETS];
   uint32_t odoBucket;                   // bucket the odometer was last in
   uint8_t  odoBucketSet;
+
+  // An index ran off the end of the 64-slot table before this was saved. The
+  // whole record is then suspect, so restore() refuses it. Carrying it is the
+  // point: without it the flag is cleared by the round trip while restored_ is
+  // set, which declares the model ready and suppresses the bootstrap that would
+  // otherwise have rebuilt it.
+  uint8_t  tableClamped;
 };
 
 // ===========================================================================
@@ -334,6 +356,7 @@ class FloorMonitor {
     maxDriftMps_ = FLOOR_MAX_DRIFT_MPS;
     alpha_ = FLOOR_HEIGHT_ALPHA;
     confidence_ = 1.0;
+    out(0.0);     // seeds last_, in case the very first sample is the bad one
   }
 
   // Same, but keeps whatever configure() was told. This is what restore() runs
@@ -351,6 +374,7 @@ class FloorMonitor {
     pitchHint_ = ph;
     pitchHintSet_ = phs;
     confidence_ = 1.0;
+    out(0.0);
   }
 
   // ---- the loop ---------------------------------------------------------
@@ -361,6 +385,24 @@ class FloorMonitor {
   // hour buckets are indexed off `t`, which is why it is uptime and not an
   // arbitrary epoch.
   FloorBroadcast update(double t, double alt) {
+    // A BMP390 conversion that fails mid-read hands back a non-finite altitude,
+    // and one of those is permanent damage rather than one bad sample: the
+    // first one is stored straight into ref_, every clamp downstream passes NaN
+    // through untouched, and the unit is dead until it is power-cycled. So the
+    // sample is dropped here, before anything reads it - which is also what
+    // keeps NaN out of the stillness ring, out of departRef_ (it only ever
+    // copies ref_) and out of the rate ring (its observations are differences
+    // of ring medians over a bounded span). The caller sees the previous
+    // broadcast, unchanged, plus the sensor-error flag the STATE packet carries
+    // in bit 4 - a held floor is what a display should show while the sensor is
+    // out, not a zero.
+    if (!isfinite(t) || !isfinite(alt)) {
+      sensorErr_ = true;
+      sensorRejects_++;
+      return last_;
+    }
+    sensorErr_ = false;
+
     rollOdometer(t);
 
     if (!refSet_) {
@@ -446,11 +488,20 @@ class FloorMonitor {
       pushParkTail(t, level);
     }
 
-    ref_ += driftRate_ * dt;
-    double step = floor_detail::clampD(level - ref_, -maxDriftMps_ * dt,
-                                       maxDriftMps_ * dt);
-    ref_ += step;
-    drift_ += step + driftRate_ * dt;
+    // dt <= 0 means the clock went backwards, which a caller deriving t from
+    // millis()/1000.0 does every 49.7 days - the wrap puts dt at about
+    // -4.29e6 s. Both terms below are rates times dt, so a single such sample
+    // would slam ref_ by kilometres and take the floor with it. Skipping the
+    // carry costs exactly the drift of one sample period; the parked follower
+    // picks it up on the next one. dt == 0 is a duplicate timestamp and the
+    // arithmetic below is already a no-op for it.
+    if (dt > 0.0) {
+      ref_ += driftRate_ * dt;
+      double step = floor_detail::clampD(level - ref_, -maxDriftMps_ * dt,
+                                         maxDriftMps_ * dt);
+      ref_ += step;
+      drift_ += step + driftRate_ * dt;
+    }
     return out(t);
   }
 
@@ -502,6 +553,10 @@ class FloorMonitor {
   // An index fell outside the 64-slot table and was clamped. Should never fire;
   // if it does the building model has run away and the record is not trustworthy.
   bool tableClamped() const { return tableClamped_; }
+  // The most recent sample was not a finite number and was dropped. This is the
+  // sensorErr bit in both wire formats - STATE bit 4, STATS bit 0.
+  bool sensorError() const { return sensorErr_; }
+  uint32_t sensorRejects() const { return sensorRejects_; }
   double dist24hM() const {
     double s = 0.0;
     for (int i = 0; i < FLOOR_ODO_BUCKETS; i++) s += odoBuckets_[i];
@@ -538,15 +593,21 @@ class FloorMonitor {
     for (int i = 0; i < FLOOR_ODO_BUCKETS; i++) s->odoBuckets[i] = odoBuckets_[i];
     s->odoBucket = odoBucket_;
     s->odoBucketSet = odoBucketSet_ ? 1 : 0;
+    s->tableClamped = tableClamped_ ? 1 : 0;
   }
 
-  // Returns false and changes nothing if the record is from another schema.
+  // Returns false and changes nothing if the record is from another schema, or
+  // if the model that wrote it had already run off the end of the floor table.
   // The transient state - the stillness ring, the dwell timers, the rate ring -
   // is deliberately not restored: it is all seconds-scale and refills within a
   // dwell, and a stale weather rate carried across a reboot would be applied to
   // trips it never observed.
   bool restore(const FloorModelState *s) {
     if (s == NULL || s->schemaVersion != FLOOR_STATE_SCHEMA) return false;
+    // A record written by a runaway model is worth less than no record: loading
+    // it sets restored_ and modelReady, which is exactly what stops the
+    // bootstrap from rebuilding the ladder from scratch. Cold boot instead.
+    if (s->tableClamped) return false;
     clearState();
     pitchSet_ = (s->pitchSet != 0);
     refSet_ = (s->refSet != 0);
@@ -562,9 +623,14 @@ class FloorMonitor {
     distanceM_ = s->distanceM;
     trips_ = s->trips;
     stops_ = s->stops;
-    for (int i = 0; i < FLOOR_ODO_BUCKETS; i++) odoBuckets_[i] = s->odoBuckets[i];
-    odoBucket_ = s->odoBucket;
-    odoBucketSet_ = (s->odoBucketSet != 0);
+    // The hour buckets are not loaded. They are indexed by uptime, and uptime
+    // restarts at 0 on the boot that reads them, so there is nothing in the
+    // record - and, with no RTC, nothing anywhere on the node - that says how
+    // long the unit was off. Loading them would report a bucket filled last
+    // Tuesday as part of "the last 24 h". So the window starts empty and grows
+    // back over the following day, which is the claim the display already makes
+    // and what spec section 9 promises. The lifetime odometer is unaffected:
+    // distanceM_ above is a total, not a window.
     restored_ = true;
     return true;
   }
@@ -686,8 +752,8 @@ class FloorMonitor {
 
   double heightOf(int f) const {
     int k = slotConst(f);
-    if (occupied_ & (1ULL << k)) return heights_[k];
-    return (double)f * pitch_;
+    if (k >= 0 && (occupied_ & (1ULL << k))) return heights_[k];
+    return (double)f * pitch_;   // nominal ladder, same as an unlearned landing
   }
 
   // Commit a landing from the jump, with the weather taken back out.
@@ -869,6 +935,7 @@ class FloorMonitor {
     b.direction = direction();
     b.dist24hM = dist24hM();
     b.modelReady = modelReady();
+    last_ = b;    // what a dropped sample re-serves, rather than a zeroed frame
     return b;
   }
 
@@ -890,10 +957,15 @@ class FloorMonitor {
     if (k >= FLOOR_TABLE_N) { k = FLOOR_TABLE_N - 1; tableClamped_ = true; }
     return k;
   }
+  // Read-side lookup: -1 for an index the table has no room for, never another
+  // floor's slot. Clamping is right on the write side - the alternative to a
+  // bound is a crash, and the flag says the model has run away - but a read
+  // that clamps hands back floor 31's learned height for floor 40 and says
+  // nothing, which is how datum() and posFloors go quietly wrong instead of
+  // falling back to the nominal ladder.
   int slotConst(int f) const {
     int k = f + FLOOR_TABLE_ORIGIN;
-    if (k < 0) k = 0;
-    if (k >= FLOOR_TABLE_N) k = FLOOR_TABLE_N - 1;
+    if (k < 0 || k >= FLOOR_TABLE_N) return -1;
     return k;
   }
   void setHeight(int f, double v) {
@@ -903,9 +975,13 @@ class FloorMonitor {
   }
   double heightOr(int f, double fallback) const {
     int k = slotConst(f);
+    if (k < 0) return fallback;
     return (occupied_ & (1ULL << k)) ? heights_[k] : fallback;
   }
-  uint16_t stopCountAt(int f) const { return stopCounts_[slotConst(f)]; }
+  uint16_t stopCountAt(int f) const {
+    int k = slotConst(f);
+    return (k < 0) ? 0 : stopCounts_[k];
+  }
   void bumpStopCount(int f) {
     int k = slot(f);
     if (stopCounts_[k] != 0xFFFF) stopCounts_[k]++;
@@ -933,6 +1009,12 @@ class FloorMonitor {
   }
 
   void pushRateObs(double v) {
+    // The last door a non-finite number could come through: both observations
+    // are a height difference over a span the callers bound away from zero, so
+    // this only fires if one of those invariants is ever broken. A single NaN
+    // in the ring poisons the median, and the median is fed forward into ref_
+    // on every sample from then on.
+    if (!isfinite(v)) return;
     if (nRateObs_ < FLOOR_RATE_HISTORY) {
       rateObs_[nRateObs_++] = v;
     } else {
@@ -1077,6 +1159,11 @@ class FloorMonitor {
   uint32_t passthroughs_;
   bool     tableClamped_;
   bool     restored_;
+  bool     sensorErr_;
+  uint32_t sensorRejects_;
+
+  // The last broadcast handed out, re-served whenever a sample is dropped.
+  FloorBroadcast last_;
 
   // The unconfirmed landing: committed to the broadcast, not yet to the
   // odometer or the building model. Cleared either by confirm() or by the car
