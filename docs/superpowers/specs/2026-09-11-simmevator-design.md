@@ -151,17 +151,20 @@ belong to the radio.
 ### 3.2 Battery sense divider
 
 ```
-  BATT+ ──[ R1 = 1 MΩ 1% ]──┬── D0 (GPIO1)
+  BATT+ ──[ R1 = 100 kΩ 1% ]──┬── D0 (GPIO1)
                             │
-                       [ R2 = 200 kΩ 1% ]
+                       [ R2 = 20 kΩ 1% ]
                             │
   BATT− ──────────────────── ┴── GND (common with XIAO GND)
 ```
 
 Ratio 6.0. 14.6 V → 2.433 V; 10.0 V → 1.667 V. The whole span sits in the
 ESP32-S3 ADC's linear region at 12 dB attenuation, which misbehaves below ~0.15 V
-and above ~2.8 V. Divider draw is 12 µA — 0.06% of the budget, so no switching
-MOSFET.
+and above ~2.8 V. Divider draw is ~122 µA at 14.6 V — about 0.5% of the budget, so no switching
+MOSFET. The resistances are kilohms rather than megohms because there is no
+filter capacitor: the ADC's sample capacitor charges through the divider's
+Thevenin resistance (~16.7 kΩ here, ~167 kΩ with 1 MΩ / 200 kΩ), and the lower
+value lets each sample settle.
 
 There is no filter capacitor across R2. The 12 V rail moves on a timescale of
 hours and the reading is taken once a minute, so the noise this leaves is
@@ -171,8 +174,21 @@ produces. Read with `analogReadMilliVolts()` (applies the factory eFuse
 calibration), once per STATS packet. A one-point correction
 `-DVBAT_CAL_NUM` / `-DVBAT_CAL_DEN` is set once against a DMM.
 
-LiFePO4 4S thresholds for the display: 13.3 V rested-full, 12.8 V nominal,
-**12.0 V warn (~20% remaining)**, 11.2 V critical.
+LiFePO4 4S thresholds, decided on the transmitter with a latch and carried in
+the STATS flags:
+
+| threshold | level | screens show | notice at ~23 mA |
+|---|---|---|---|
+| < 12.8 V | LOW, ~20% left | amber CHARGE SOON badge | ~3.5 days |
+| < 12.0 V | CRITICAL, ~10% left | steady red CHARGE BATTERY banner, red LED | under 2 days |
+| ≥ 13.3 V | clears either | normal bar | - |
+
+An earlier version of this section called 12.0 V "~20% remaining". It is nearer
+10%. The warning latches rather than following the voltage, so it cannot flicker
+off by itself, and it clears only on a charged pack. It stays in colour when the
+link goes stale, because a flat battery is the likeliest cause of the silence.
+The thresholds sit where uncalibrated ±0.4 V matters, so calibration is needed
+for the notice to be accurate.
 
 ### 3.3 Power chain
 
@@ -228,8 +244,8 @@ nothing outside this repo is edited.
 | LiFePO4 12.8 V 10 Ah pack with BMS | 1 | 4S; BMS required |
 | LiFePO4 charger, 14.6 V | 1 | a Li-ion or lead-acid charger will not terminate correctly |
 | MP1584EN buck module | 1 | set to 3.3 V **before** connecting the XIAO |
-| Resistor 1 MΩ 1% | 1 | divider top |
-| Resistor 200 kΩ 1% | 1 | divider bottom |
+| Resistor 100 kΩ 1% | 1 | divider top |
+| Resistor 20 kΩ 1% | 1 | divider bottom |
 | Spade terminal pair | 1 | so the pack can come off for charging |
 | Hookup wire / JST leads | — | |
 
@@ -422,6 +438,11 @@ claims.
   delivery guarantee and a threshold that flapped on a single loss would have
   ten screens blinking), and **no STATS for 180 s greys it out** and turns the
   RGB LED amber, so a dead link is visible from the corridor.
+- **Battery warnings (§3.2):** CHARGE SOON replaces the battery bar with an
+  amber badge; CHARGE BATTERY adds a steady full-width red banner along the
+  bottom and turns the LED steady red, outranking amber. Steady, not flashing:
+  these are public corridors and a red band is already unmissable. The number
+  moved up 8 px to leave room for the banner rather than overlapping it.
 - The LDR on GPIO34 drives backlight PWM on GPIO21 for night dimming.
 - Distance is extrapolated locally between heartbeats from observed floor changes
   × the transmitted pitch, then corrected to the transmitter's figure on each

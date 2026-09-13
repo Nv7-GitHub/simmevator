@@ -292,11 +292,11 @@ They are counters for interest, not for accounting.
 ### The `flags` byte at offset 22
 
 ```
-  bit   7     6     5     4     3        2        1       0
-      +-----+-----+-----+-----+--------+--------+-------+--------+
-      |  -  |  -  |  -  |  -  | low    | nvs    | model | sensor |
-      |     |     |     |     | Battery|Restored| Ready |  Err   |
-      +-----+-----+-----+-----+--------+--------+-------+--------+
+  bit   7     6     5      4        3        2        1       0
+      +-----+-----+-----+--------+--------+--------+-------+--------+
+      |  -  |  -  |  -  | crit   | low    | nvs    | model | sensor |
+      |     |     |     | Battery| Battery|Restored| Ready |  Err   |
+      +-----+-----+-----+--------+--------+--------+-------+--------+
         reserved, sent as 0
 ```
 
@@ -305,7 +305,8 @@ They are counters for interest, not for accounting.
 | 0x01 | `ELEV_FLAG_SENSOR_ERR` | the BMP390 is not answering |
 | 0x02 | `ELEV_FLAG_MODEL_READY` | pitch established |
 | 0x04 | `ELEV_FLAG_NVS_RESTORED` | the model came back from NVS on boot rather than being learned this run. Lets a display tell "restored and trusted" from "learned here" |
-| 0x08 | `ELEV_FLAG_LOW_BATTERY` | below the 12.0 V warn threshold, ~20% remaining on a 4S LiFePO4 pack |
+| 0x08 | `ELEV_FLAG_LOW_BATTERY` | latched below 12.8 V since the last charge, ~20% remaining: screens show CHARGE SOON |
+| 0x10 | `ELEV_FLAG_CRITICAL_BATTERY` | latched below 12.0 V since the last charge, ~10% remaining: screens show the CHARGE BATTERY banner. Always sent with 0x08 set too, so a receiver that only checks LOW still warns |
 
 `lowBattery` is sent as a bit *as well as* a voltage on purpose. The threshold
 lives on the transmitter, which is the only node that knows its own `VBAT_CAL_*`
@@ -323,7 +324,7 @@ Parked, healthy, a day into a run, model restored from NVS on the last reboot:
 ```
   offset:  0    1    2     3  4     5  6     7  8  9 10    11 12   13
          +----+----+----+-------+-------+-------------+-------+----+
-         | E1 | 01 | 2B | C4 31 | 51 0D | B5 F5 01 00 | 37 0B | 0A |
+         | E1 | 01 | 2B | 2C 33 | 51 0D | B5 F5 01 00 | 37 0B | 0A |
          +----+----+----+-------+-------+-------------+-------+----+
 
   offset: 14 15   16 17   18 19 20 21    22   23
@@ -334,9 +335,9 @@ Parked, healthy, a day into a run, model restored from NVS on the last reboot:
   E1           tag           STATS
   01           txId          1
   2B           seq           43
-  C4 31        batteryMv     0x31C4 = 12740 mV = 12.74 V
-                             13.3 V is rested-full and 12.0 V is the warn
-                             threshold, so this pack is healthy
+  2C 33        batteryMv     0x332C = 13100 mV = 13.10 V
+                             13.3 V is rested-full and 12.8 V is where
+                             CHARGE SOON latches, so this pack is healthy
   51 0D        dist24hM      0x0D51 = 3409 m in the last 24 buckets
   B5 F5 01 00  distTotalM    0x0001F5B5 = 128437 m lifetime
   37 0B        pitchMm       0x0B37 = 2871 mm = 2.871 m  <- the learned pitch
@@ -349,6 +350,7 @@ Parked, healthy, a day into a run, model restored from NVS on the last reboot:
                              bit1 modelReady  = 1
                              bit2 nvsRestored = 1   <- learned before this boot
                              bit3 lowBattery  = 0
+                             bit4 critBattery = 0
   16           tempC         22 degC
 ```
 
@@ -633,7 +635,7 @@ reflash all of them.
 
 | change | why it is safe |
 |---|---|
-| Setting a reserved bit in `state` (bits 5-7) or `flags` (bits 4-7) | old receivers mask for the bits they know and ignore the rest |
+| Setting a reserved bit in `state` (bits 5-7) or `flags` (bits 5-7) | old receivers mask for the bits they know and ignore the rest |
 | Adding a new LoRa tag, e.g. `0xE2` | `elevPacketLength()` returns 0 for a tag it does not speak; `elevStateUnpack()`/`elevStatsUnpack()` return `ELEV_ERR_TAG`. An old display counts the drop and carries on. The mesh envelope passes any `type` through, so a new format floods to every floor before a single display understands it |
 | Widening the mesh payload up to 32 bytes | `MESH_MAX_PAYLOAD` is already 32; the envelope does not need to change |
 

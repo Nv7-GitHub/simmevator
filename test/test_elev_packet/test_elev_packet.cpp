@@ -341,10 +341,26 @@ void test_stats_battery_thresholds(void) {
   TEST_ASSERT_FLOAT_WITHIN(0.0005f, 13.300f, elevStatsBatteryVolts(&s));
   TEST_ASSERT_FALSE(elevStatsLowBattery(&s));
 
-  s.batteryMv = 11200; s.flags = elevStatsFlagsByte(false, true, false, true);
+  s.batteryMv = 12700; s.flags = elevStatsFlagsByte(false, true, false, true);
   statsRoundTrip(&s);
-  TEST_ASSERT_FLOAT_WITHIN(0.0005f, 11.200f, elevStatsBatteryVolts(&s));
+  TEST_ASSERT_FLOAT_WITHIN(0.0005f, 12.700f, elevStatsBatteryVolts(&s));
   TEST_ASSERT_TRUE(elevStatsLowBattery(&s));
+  TEST_ASSERT_FALSE(elevStatsCriticalBattery(&s));
+
+  s.batteryMv = 11900; s.flags = elevStatsFlagsByte(false, true, false, false, true);
+  statsRoundTrip(&s);
+  TEST_ASSERT_FLOAT_WITHIN(0.0005f, 11.900f, elevStatsBatteryVolts(&s));
+  TEST_ASSERT_TRUE(elevStatsCriticalBattery(&s));
+}
+
+// A display that only knows the LOW bit must still warn when the pack is
+// critical, so the assembler sets LOW whenever it sets CRITICAL - even if the
+// caller forgot to. Checked on the raw byte, since an accessor that happened to
+// OR the bits together would pass a round-trip test and hide the omission.
+void test_stats_critical_battery_implies_low(void) {
+  TEST_ASSERT_EQUAL_HEX8(0x18, elevStatsFlagsByte(false, false, false, false, true));
+  TEST_ASSERT_EQUAL_HEX8(0x18, elevStatsFlagsByte(false, false, false, true, true));
+  TEST_ASSERT_EQUAL_HEX8(0x08, elevStatsFlagsByte(false, false, false, true, false));
 }
 
 void test_stats_flag_bits_are_at_the_documented_positions(void) {
@@ -352,6 +368,8 @@ void test_stats_flag_bits_are_at_the_documented_positions(void) {
   TEST_ASSERT_EQUAL_HEX8(0x02, elevStatsFlagsByte(false, true, false, false));
   TEST_ASSERT_EQUAL_HEX8(0x04, elevStatsFlagsByte(false, false, true, false));
   TEST_ASSERT_EQUAL_HEX8(0x08, elevStatsFlagsByte(false, false, false, true));
+  TEST_ASSERT_EQUAL_HEX8(0x10, (uint8_t)(elevStatsFlagsByte(false, false, false, false, true)
+                                         & ELEV_FLAG_CRITICAL_BATTERY));
 
   ElevStats s;
   memset(&s, 0, sizeof(s));
@@ -451,6 +469,7 @@ int main(int, char **) {
   RUN_TEST(test_stats_accessors_undo_the_scaling);
   RUN_TEST(test_stats_battery_thresholds);
   RUN_TEST(test_stats_flag_bits_are_at_the_documented_positions);
+  RUN_TEST(test_stats_critical_battery_implies_low);
   RUN_TEST(test_stats_rejects_truncated_and_overlong);
   RUN_TEST(test_stats_rejects_wrong_tag);
   RUN_TEST(test_stats_pack_rejects_a_short_buffer);

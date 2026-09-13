@@ -70,8 +70,9 @@ uint16_t batteryReadMv() {
   uint32_t pinMv = ((uint32_t)s[VBAT_SAMPLES / 2 - 1] +
                     (uint32_t)s[VBAT_SAMPLES / 2]) / 2u;
 
-  // 64-bit because the intermediate is not small: 2433 mV x 1.2 MOhm is 2.9e9,
-  // which already uses all of a uint32 before the calibration ratio touches it.
+  // 64-bit because the intermediates are not small: 2433 mV x 120 kOhm is
+  // 2.9e8, and a DMM calibration numerator like 13280 then takes the pack
+  // figure past a uint32. Headroom for any divider values, too.
   uint64_t packMv = (uint64_t)pinMv *
                     (uint64_t)(VBAT_DIVIDER_R1 + VBAT_DIVIDER_R2) /
                     (uint64_t)VBAT_DIVIDER_R2;
@@ -91,3 +92,34 @@ uint16_t batteryReadMv() {
 uint16_t batteryLastMv() {
   return lastMv;
 }
+
+// ---------------------------------------------------------------------------
+// Latched level
+// ---------------------------------------------------------------------------
+static BatteryLevel gLevel = BATTERY_OK;
+
+const char *batteryLevelName(BatteryLevel level) {
+  switch (level) {
+    case BATTERY_OK:       return "ok";
+    case BATTERY_LOW:      return "LOW";
+    case BATTERY_CRITICAL: return "CRITICAL";
+  }
+  return "?";
+}
+
+BatteryLevel batteryLevelUpdate(uint16_t mv) {
+  if (mv == 0) return gLevel;
+
+  if (mv >= VBAT_CHARGED_MV) {
+    gLevel = BATTERY_OK;
+  } else if (mv < VBAT_CRITICAL_MV) {
+    gLevel = BATTERY_CRITICAL;
+  } else if (mv < VBAT_WARN_MV && gLevel == BATTERY_OK) {
+    gLevel = BATTERY_LOW;
+  }
+  // Between the thresholds and VBAT_CHARGED_MV the level holds wherever it is:
+  // that band is the hysteresis.
+  return gLevel;
+}
+
+BatteryLevel batteryLevel() { return gLevel; }

@@ -74,6 +74,7 @@
 // ---------------------------------------------------------------------------
 static bool     gSeenAnyFrame = false;
 static uint32_t gFirstFrameMs = 0;
+static uint8_t  gBatteryLevel = DISPLAY_BATTERY_OK;  // latched on the car, per STATS
 
 static bool     gHaveState   = false;
 static uint32_t gLastStateMs = 0;
@@ -186,6 +187,9 @@ static void applyStats(const uint8_t *pkt, size_t len) {
   gHaveStats   = true;
 
   gBatteryVolts = elevStatsBatteryVolts(&s);
+  gBatteryLevel = elevStatsCriticalBattery(&s) ? DISPLAY_BATTERY_CRITICAL
+                : elevStatsLowBattery(&s)      ? DISPLAY_BATTERY_LOW
+                                               : DISPLAY_BATTERY_OK;
   gPitchM       = elevStatsPitchM(&s);
 
   // The transmitter's figure lands as-is and whatever this node extrapolated
@@ -273,6 +277,7 @@ static DisplayUiState buildUiState(uint32_t now) {
   // absent for the first minute after boot and draw as "--" until then.
   s.batteryValid = gHaveStats;
   s.batteryVolts = gBatteryVolts;
+  s.batteryLevel = gBatteryLevel;
   s.distValid    = gHaveStats;
   s.dist24hMiles =
       (gDist24hBaseM + (float)gFloorsSinceStats * gPitchM) / METRES_PER_MILE;

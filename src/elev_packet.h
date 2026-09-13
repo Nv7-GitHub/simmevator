@@ -102,10 +102,13 @@ enum ElevDirection {
 // The model came back from NVS on boot rather than being learned this run.
 // A display can tell "restored and trusted" from "learned here".
 #define ELEV_FLAG_NVS_RESTORED 0x04
-// Below the 12.0 V warn threshold, ~20% remaining on a 4S LiFePO4 pack. Sent
-// as a bit as well as a voltage so the threshold lives on the transmitter,
-// which is the only node that knows its own calibration.
-#define ELEV_FLAG_LOW_BATTERY  0x08
+// The transmitter's latched battery level - see battery.h for the thresholds
+// and the hysteresis. Sent as bits as well as a voltage so the thresholds live
+// on the transmitter, which is the only node that knows its own calibration,
+// and so all ten screens agree on when to warn rather than each deciding.
+// CRITICAL implies LOW: a receiver checking only LOW still warns.
+#define ELEV_FLAG_LOW_BATTERY      0x08   // below 12.8 V since last charge, ~20%
+#define ELEV_FLAG_CRITICAL_BATTERY 0x10   // below 12.0 V since last charge, ~10%
 
 // ---------------------------------------------------------------------------
 // Decode results
@@ -326,14 +329,21 @@ static inline bool elevStatsNvsRestored(const ElevStats *s) {
 static inline bool elevStatsLowBattery(const ElevStats *s) {
   return (s->flags & ELEV_FLAG_LOW_BATTERY) != 0;
 }
+static inline bool elevStatsCriticalBattery(const ElevStats *s) {
+  return (s->flags & ELEV_FLAG_CRITICAL_BATTERY) != 0;
+}
 
+// criticalBattery sets LOW as well, so the invariant "CRITICAL implies LOW"
+// holds for every packet this builds rather than depending on each caller.
 static inline uint8_t elevStatsFlagsByte(bool sensorErr, bool modelReady,
-                                         bool nvsRestored, bool lowBattery) {
+                                         bool nvsRestored, bool lowBattery,
+                                         bool criticalBattery = false) {
   uint8_t b = 0;
-  if (sensorErr)   b |= ELEV_FLAG_SENSOR_ERR;
-  if (modelReady)  b |= ELEV_FLAG_MODEL_READY;
-  if (nvsRestored) b |= ELEV_FLAG_NVS_RESTORED;
-  if (lowBattery)  b |= ELEV_FLAG_LOW_BATTERY;
+  if (sensorErr)       b |= ELEV_FLAG_SENSOR_ERR;
+  if (modelReady)      b |= ELEV_FLAG_MODEL_READY;
+  if (nvsRestored)     b |= ELEV_FLAG_NVS_RESTORED;
+  if (lowBattery)      b |= ELEV_FLAG_LOW_BATTERY;
+  if (criticalBattery) b |= ELEV_FLAG_LOW_BATTERY | ELEV_FLAG_CRITICAL_BATTERY;
   return b;
 }
 

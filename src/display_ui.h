@@ -214,24 +214,33 @@
 #endif
 
 // ---------------------------------------------------------------------------
-// Battery thresholds (spec 3.2), in millivolts
+// Battery bar scale (spec 3.2), in millivolts
+//
+// These only set how far the bar is filled. They deliberately do NOT decide
+// when to warn: that is the transmitter's latched level, carried in the STATS
+// flags (elev_packet.h, battery.h). A second set of thresholds here would let
+// ten screens and the car disagree about whether the pack needs charging, and
+// could never apply the transmitter's own calibration or its hysteresis.
 //
 // A 4S LiFePO4 discharge curve is almost flat, so the bar is a coarse
-// indicator and not a fuel gauge - see spec section 9. These are the numbers
-// the colour changes at.
+// indicator and not a fuel gauge - see spec section 9. Empty is the 12.0 V
+// CHARGE BATTERY point rather than the BMS cutoff, so an empty bar means act.
 // ---------------------------------------------------------------------------
 #ifndef DISPLAY_VBAT_FULL_MV
 #define DISPLAY_VBAT_FULL_MV 13300
 #endif
-#ifndef DISPLAY_VBAT_NOMINAL_MV
-#define DISPLAY_VBAT_NOMINAL_MV 12800
+#ifndef DISPLAY_VBAT_EMPTY_MV
+#define DISPLAY_VBAT_EMPTY_MV 12000
 #endif
-#ifndef DISPLAY_VBAT_WARN_MV
-#define DISPLAY_VBAT_WARN_MV 12000
-#endif
-#ifndef DISPLAY_VBAT_CRITICAL_MV
-#define DISPLAY_VBAT_CRITICAL_MV 11200
-#endif
+
+// The transmitter's battery level as the renderer sees it. Mirrors
+// BatteryLevel in battery.h, which this module cannot include - it pulls in the
+// car's ADC code.
+enum DisplayBatteryLevel {
+  DISPLAY_BATTERY_OK = 0,
+  DISPLAY_BATTERY_LOW,       // CHARGE SOON badge
+  DISPLAY_BATTERY_CRITICAL   // CHARGE BATTERY banner and a red LED
+};
 
 // ---------------------------------------------------------------------------
 // Staleness (spec 6)
@@ -287,8 +296,9 @@ struct DisplayUiState {
 
   // Battery and odometer come from STATS, so they may legitimately be absent
   // for the first minute after boot. Both are drawn as "--" when not valid.
-  float batteryVolts;
-  bool  batteryValid;
+  float   batteryVolts;
+  bool    batteryValid;
+  uint8_t batteryLevel;   // DisplayBatteryLevel, from the STATS flags
   float dist24hMiles;
   bool  distValid;
 

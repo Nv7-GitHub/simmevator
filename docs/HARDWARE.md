@@ -32,8 +32,8 @@ the note after the tables before you add anything back.
 | LiFePO4 12.8 V 10 Ah pack with BMS | 1 | 4S; BMS required |
 | LiFePO4 charger, 14.6 V | 1 | a Li-ion or lead-acid charger will not terminate correctly |
 | MP1584EN buck module | 1 | set to 3.3 V **before** connecting the XIAO |
-| Resistor 1 MΩ 1% | 1 | divider top |
-| Resistor 200 kΩ 1% | 1 | divider bottom |
+| Resistor 100 kΩ 1% | 1 | divider top |
+| Resistor 20 kΩ 1% | 1 | divider bottom |
 | Spade terminal pair | 1 | so the pack can come off for charging |
 | Hookup wire / JST leads | — | |
 
@@ -175,9 +175,9 @@ than a measured one, but it costs nothing to avoid.
 From spec 3.2:
 
 ```
-  BATT+ ──[ R1 = 1 MΩ 1% ]──┬── D0 (GPIO1)
+  BATT+ ──[ R1 = 100 kΩ 1% ]──┬── D0 (GPIO1)
                             │
-                       [ R2 = 200 kΩ 1% ]
+                       [ R2 = 20 kΩ 1% ]
                             │
   BATT− ──────────────────── ┴── GND (common with XIAO GND)
 ```
@@ -191,20 +191,26 @@ What the ADC pin actually sees, computed from that ratio:
 |---|---|---|
 | 14.6 V | 2.433 V | a charger at its termination voltage |
 | 13.3 V | 2.217 V | rested full |
-| 12.8 V | 2.133 V | nominal |
-| 12.0 V | 2.000 V | warn, ~20% remaining |
-| 11.2 V | 1.867 V | critical |
+| 12.8 V | 2.133 V | CHARGE SOON, ~20% remaining |
+| 12.0 V | 2.000 V | CHARGE BATTERY, ~10% remaining |
 | 10.0 V | 1.667 V | BMS cutoff territory |
 
 The whole span sits inside the ESP32-S3 ADC's linear region at 12 dB
 attenuation, which misbehaves below ~0.15 V and above ~2.8 V. That is the point
-of these two resistances: not to use the full scale, but to keep both ends of
+of this ratio: not to use the full scale, but to keep both ends of
 the pack's range comfortably inside the part of the range that behaves, with
 headroom at the top for a charger that overshoots.
 
-Divider draw is 12 µA at 14.6 V, which is 0.05% of the ~23 mA average the
-30-day budget is built on. That is why there is no switching MOSFET across it -
+Divider draw is ~122 µA at 14.6 V, which is about 0.5% of the ~23 mA average
+the 30-day budget is built on - roughly a third of a day off the ~56-day
+figure. That is why there is no switching MOSFET across it -
 the switch would cost more parts and more ways to fail than it saves.
+
+**Why kilohms and not megohms.** With no filter capacitor, the ADC's internal
+sample capacitor charges straight through the divider's Thevenin resistance -
+R1 ∥ R2, ~16.7 kΩ here. At 1 MΩ / 200 kΩ that would be ~167 kΩ, slow enough
+that each sample can read low and pick up more noise. The ratio, and so every
+voltage in the table above, is unchanged.
 
 **Why D0 and not somewhere else.** D0 = GPIO1 = ADC1_CH0 is the only free ADC1
 pad on this board:
@@ -415,20 +421,34 @@ exists for exactly this.
 
 ### Voltage to state of charge
 
-From spec 3.2, mirrored in `battery.h` as `VBAT_WARN_MV` / `VBAT_CRITICAL_MV`:
+From spec 3.2, set in `battery.h` as `VBAT_WARN_MV` / `VBAT_CRITICAL_MV` /
+`VBAT_CHARGED_MV`:
 
-| voltage | state |
-|---|---|
-| 13.3 V | rested full |
-| 12.8 V | nominal |
-| **12.0 V** | **warn, ~20% remaining** - this is what raises `lowBattery` in the STATS packet and colours the bar on every display |
-| 11.2 V | critical; the BMS is close to cutting off |
+| voltage | what every screen shows | notice at ~23 mA |
+|---|---|---|
+| 13.3 V | rested full - clears any warning | - |
+| **12.8 V** | **CHARGE SOON**: amber badge in place of the battery bar, voltage in amber | ~3.5 days (~20% left) |
+| **12.0 V** | **CHARGE BATTERY**: steady red banner across the bottom, red badge, onboard LED steady red | under 2 days (~10% left) |
+| ~10 V | the BMS disconnects the pack and the car node goes silent | - |
 
-The middle of that range tells you very little. A LiFePO4 discharge curve is
-almost flat from 13.3 V down to about 12.8 V, which is why those two endpoints
-are worth more than any reading between them, and why 12.0 V is where the
-firmware starts complaining rather than somewhere with a nicer round percentage
-attached.
+Each 10% of a 10 Ah pack is about 1.8 days at the budgeted draw, so these give
+less notice than the voltages suggest. An earlier version warned at 12.0 V
+believing it was ~20%; it is nearer 10%.
+
+The warning **latches**. Once a reading crosses a threshold the level stays up,
+even if a later reading wobbles back above it, and clears only when the pack
+reads 13.3 V - which in practice means it has been charged. A warning that
+disappeared by itself would be the easy one to miss. The latch lives on the
+transmitter, and the level travels in the STATS flags, so all ten screens agree.
+
+A warning also does not grey out when the link goes stale, although everything
+else on the screen does. If the car node goes silent right after CHARGE BATTERY,
+the likeliest reason is that the battery ran out, and that is the moment the
+warning should stay on the screen.
+
+The thresholds sit on the flat part of the curve, where ±2-3% uncalibrated
+accuracy is about ±0.4 V. **Do the one-time calibration** (above) or CHARGE SOON
+may come days early or not until CHARGE BATTERY.
 
 Expect to charge roughly every two months if the node is behaving: spec 2
 budgets ~23 mA average at evening-peak traffic, which is ~56 days, against a
@@ -524,12 +544,12 @@ connected. Each line is here because getting it wrong costs a board.
 
 | # | check | how | pass looks like |
 |---|---|---|---|
-| 1 | No shorts on the pack rail | meter in continuity/resistance across the spade pair, pack off | not a short. You should read roughly the divider's 1.2 MΩ in parallel with whatever the buck input looks like. A beep here means stop. |
+| 1 | No shorts on the pack rail | meter in continuity/resistance across the spade pair, pack off | not a short. You should read roughly the divider's 120 kΩ in parallel with whatever the buck input looks like. A beep here means stop. |
 | 2 | Polarity, pack to buck | trace IN+ to pack positive and IN− to pack negative by eye and by meter | the buck's silkscreen agrees with the wires |
 | 3 | Ground is one node | continuity: XIAO GND to buck OUT− to divider bottom leg to pack minus | all four beep together |
 | 4 | **Buck output is 3.3 V** | section 3.4, with the output disconnected from everything | 3.30 V ± a few tens of mV on the meter, checked after a power cycle |
 | 5 | Buck output polarity | OUT+ goes to the **3V3** pad, not 5V, not any signal pad | read the silkscreen twice |
-| 6 | Divider ratio is sane | meter R1 and R2 in circuit: ~1 MΩ top, ~200 kΩ bottom | ratio near 6.0. If R1 and R2 got swapped the pin sees 5/6 of the pack - over 10 V straight onto a 3.3 V pin. |
+| 6 | Divider ratio is sane | meter R1 and R2 in circuit: ~100 kΩ top, ~20 kΩ bottom | ratio near 6.0. If R1 and R2 got swapped the pin sees 5/6 of the pack - over 10 V straight onto a 3.3 V pin. |
 | 7 | Divider tap goes to D0 | continuity from the R1/R2 junction to the D0 pad | beeps, and does **not** beep to D1, 3V3 or GND |
 | 8 | Nothing on D4/D5 but the BMP390 | visual | SDA to D4, SCL to D5, not crossed |
 | 9 | Antenna attached | visual | screwed down before any power |

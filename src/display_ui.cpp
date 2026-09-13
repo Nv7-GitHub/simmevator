@@ -21,12 +21,12 @@
 // ===========================================================================
 static const uint16_t COL_BG        = 0x0000;  // black
 static const uint16_t COL_INK_FRESH = 0xFFFF;  // white
-static const uint16_t COL_INK_DIM   = 0x9CF3;  // ~60% grey, no STATE for 10 s
+static const uint16_t COL_INK_DIM   = 0x9CF3;  // ~60% grey, no STATS for 150 s
 static const uint16_t COL_INK_GREY  = 0x5ACB;  // ~35% grey, no STATS for 180 s
 static const uint16_t COL_CHROME    = 0x3186;  // the divider rule
-static const uint16_t COL_BAR_OK    = 0x07E0;  // green,  >= 12.8 V
-static const uint16_t COL_BAR_WARN  = 0xFD20;  // orange, >= 12.0 V
-static const uint16_t COL_BAR_LOW   = 0xF800;  // red,     < 12.0 V
+static const uint16_t COL_BAR_OK    = 0x07E0;  // green,  battery ok
+static const uint16_t COL_BAR_WARN  = 0xFD20;  // orange, CHARGE SOON
+static const uint16_t COL_BAR_LOW   = 0xF800;  // red,    CHARGE BATTERY
 
 // ===========================================================================
 // Region geometry
@@ -37,9 +37,17 @@ static const uint16_t COL_BAR_LOW   = 0xF800;  // red,     < 12.0 V
 
 // The number's sprite. 4 px of margin on each side of the left pane.
 static const int16_t NUM_X = 4;
-static const int16_t NUM_Y = 22;
+static const int16_t NUM_Y = 14;
 static const int16_t NUM_W = DISPLAY_SPLIT_X - 2 * NUM_X;
-static const int16_t NUM_H = 196;
+static const int16_t NUM_H = 192;   // ends at y = 206, clear of the banner
+
+// The CHARGE BATTERY banner: a full-width strip along the bottom. The number
+// moved up 8 px and lost 4 px of height to make room, rather than having the
+// banner overlap it - the sprite repaints its whole rectangle, so an overlap
+// would erase the banner's top edge on every floor change. 4 px off a ~190 px
+// digit is invisible from a corridor; a banner that flickers is not.
+static const int16_t BANNER_H = 30;
+static const int16_t BANNER_Y = DISPLAY_H - BANNER_H;
 
 // Right pane, inset 6 px from the rule and from the right edge.
 static const int16_t RP_X  = DISPLAY_SPLIT_X + 6;
@@ -281,6 +289,8 @@ struct RenderedForm {
   uint16_t voltInk;
   uint8_t  barPct;  // quantised - see barPercent()
   uint16_t barCol;
+  uint8_t  barLevel;
+  bool     banner;
   char     dist[12];
   uint16_t distInk;
 };
@@ -431,6 +441,7 @@ DisplayUiState displayUiStateInit() {
   s.direction     = ELEV_DIR_IDLE;
   s.batteryVolts  = 0.0f;
   s.batteryValid  = false;
+  s.batteryLevel  = DISPLAY_BATTERY_OK;
   s.dist24hMiles  = 0.0f;
   s.distValid     = false;
   s.stateStale    = false;
@@ -583,7 +594,7 @@ static void paintVolts(const char *text, uint16_t ink) {
 static uint8_t barPercent(float volts, bool valid) {
   if (!valid) return 0;
   const int32_t mv = (int32_t)(volts * 1000.0f + 0.5f);
-  const int32_t lo = DISPLAY_VBAT_CRITICAL_MV;
+  const int32_t lo = DISPLAY_VBAT_EMPTY_MV;
   const int32_t hi = DISPLAY_VBAT_FULL_MV;
   int32_t pct = (mv - lo) * 100 / (hi - lo);
   if (pct < 0) pct = 0;
@@ -591,23 +602,40 @@ static uint8_t barPercent(float volts, bool valid) {
   return (uint8_t)((pct / 4) * 4);
 }
 
-static uint16_t barColour(float volts, bool valid, bool statsStale) {
-  // Grey only once STATS itself is stale. A dimmed readout still shows the
-  // last known battery state in its real colour, because that reading was
-  // true when it arrived and nothing has contradicted it yet.
-  if (!valid || statsStale) return COL_INK_GREY;
-  const int32_t mv = (int32_t)(volts * 1000.0f + 0.5f);
-  if (mv >= DISPLAY_VBAT_NOMINAL_MV) return COL_BAR_OK;
-  if (mv >= DISPLAY_VBAT_WARN_MV) return COL_BAR_WARN;
-  return COL_BAR_LOW;
+// Colour comes from the transmitter's level, never from the voltage here.
+//
+// A battery WARNING keeps its colour even once STATS has gone stale, where
+// everything else on the screen greys out. The likeliest reason the link dies
+// right after a low-battery warning is that the battery ran out - so greying
+// the warning at that moment would hide it at exactly the point it came true.
+// An OK bar does grey, since "the battery was fine three minutes ago" is not
+// worth asserting in green.
+static uint16_t barColour(uint8_t level, bool valid, bool statsStale) {
+  if (!valid) return COL_INK_GREY;
+  if (level == DISPLAY_BATTERY_CRITICAL) return COL_BAR_LOW;
+  if (level == DISPLAY_BATTERY_LOW) return COL_BAR_WARN;
+  return statsStale ? COL_INK_GREY : COL_BAR_OK;
 }
 
-static void paintBar(uint8_t pct, uint16_t colour) {
+static void paintBar(uint8_t pct, uint16_t colour, uint8_t level) {
   const int16_t x = RP_CX - BAR_W / 2;
   const int16_t y = BAR_Y + 2;
   const int16_t h = BAR_H - 4;
 
   tft.fillRect(RP_X, BAR_Y, RP_W, BAR_H, COL_BG);
+
+  // Once a warning is up the bar becomes a solid badge that says what to do.
+  // A nearly empty outline in orange is a thing you have to interpret; a filled
+  // block reading CHARGE SOON is not.
+  if (level != DISPLAY_BATTERY_OK) {
+    tft.fillRect(x, y, BAR_W, h, colour);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(COL_BG, colour);
+    tft.drawString(level == DISPLAY_BATTERY_CRITICAL ? "CHARGE NOW" : "CHARGE SOON",
+                   RP_CX, y + h / 2 + 1, 2);
+    return;
+  }
+
   tft.drawRect(x, y, BAR_W, h, colour);
   const int16_t inner = BAR_W - 4;
   const int16_t fill  = (int16_t)((int32_t)inner * pct / 100);
@@ -623,6 +651,26 @@ static void paintDistance(const char *text, uint16_t ink) {
   // to fade with the number it labels, or a greyed-out screen keeps one bright
   // word on it.
   tft.drawString("today", RP_CX, DIST_Y + 40, 2);
+}
+
+// The bottom strip. Steady rather than flashing: these screens are in public
+// corridors, and a steady red band is already unmissable at distance. When it
+// comes down it has to put back what it covered - the foot of the divider rule
+// and the byline - because paintChrome only runs on a full repaint.
+static void paintBanner(bool on) {
+  if (on) {
+    tft.fillRect(0, BANNER_Y, DISPLAY_W, BANNER_H, COL_BAR_LOW);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(COL_INK_FRESH, COL_BAR_LOW);
+    tft.drawString("CHARGE BATTERY", DISPLAY_W / 2, BANNER_Y + BANNER_H / 2 + 1, 4);
+    return;
+  }
+  tft.fillRect(0, BANNER_Y, DISPLAY_W, BANNER_H, COL_BG);
+  tft.drawFastVLine(DISPLAY_SPLIT_X, BANNER_Y, (DISPLAY_H - 8) - BANNER_Y, COL_CHROME);
+  tft.setTextDatum(BL_DATUM);
+  tft.setTextColor(COL_CHROME, COL_BG);
+  tft.drawString("Made by Nv7", NUM_X + 2, DISPLAY_H - 6, 1);
+  tft.setTextDatum(MC_DATUM);
 }
 
 static void paintChrome() {
@@ -675,20 +723,35 @@ void displayUpdate(const DisplayUiState &s) {
   } else {
     snprintf(volts, sizeof(volts), "-- V");
   }
-  if (strcmp(volts, gShown.volts) != 0 || ink != gShown.voltInk) {
-    paintVolts(volts, ink);
+  // The voltage takes the warning colour too, and like the badge it does not
+  // grey out when the link goes stale - see barColour().
+  const uint16_t voltInk =
+      (s.batteryValid && s.batteryLevel == DISPLAY_BATTERY_CRITICAL) ? COL_BAR_LOW :
+      (s.batteryValid && s.batteryLevel == DISPLAY_BATTERY_LOW)      ? COL_BAR_WARN :
+                                                                       ink;
+  if (strcmp(volts, gShown.volts) != 0 || voltInk != gShown.voltInk) {
+    paintVolts(volts, voltInk);
     strncpy(gShown.volts, volts, sizeof(gShown.volts) - 1);
     gShown.volts[sizeof(gShown.volts) - 1] = '\0';
-    gShown.voltInk = ink;
+    gShown.voltInk = voltInk;
   }
 
-  // --- battery bar ---
+  // --- battery bar / badge ---
+  const uint8_t  level  = s.batteryValid ? s.batteryLevel : (uint8_t)DISPLAY_BATTERY_OK;
   const uint8_t  pct    = barPercent(s.batteryVolts, s.batteryValid);
-  const uint16_t barCol = barColour(s.batteryVolts, s.batteryValid, s.statsStale);
-  if (pct != gShown.barPct || barCol != gShown.barCol) {
-    paintBar(pct, barCol);
-    gShown.barPct = pct;
-    gShown.barCol = barCol;
+  const uint16_t barCol = barColour(level, s.batteryValid, s.statsStale);
+  if (pct != gShown.barPct || barCol != gShown.barCol || level != gShown.barLevel) {
+    paintBar(pct, barCol, level);
+    gShown.barPct   = pct;
+    gShown.barCol   = barCol;
+    gShown.barLevel = level;
+  }
+
+  // --- CHARGE BATTERY banner ---
+  const bool banner = (level == DISPLAY_BATTERY_CRITICAL);
+  if (banner != gShown.banner) {
+    paintBanner(banner);
+    gShown.banner = banner;
   }
 
   // --- 24 h distance ---
@@ -710,5 +773,13 @@ void displayUpdate(const DisplayUiState &s) {
   // waiting to happen, and the screen already says everything. Amber once
   // STATS has been missing for 180 s, per spec section 6, so a dead link is
   // visible from the corridor without reading the screen at all.
-  displayLedRgb(s.statsStale ? 255 : 0, s.statsStale ? 96 : 0, 0);
+  //
+  // Steady red for CHARGE BATTERY, and it outranks amber. The two usually
+  // arrive together - a flat pack is what silences the transmitter - and red is
+  // the one that tells you what to do about it.
+  if (banner) {
+    displayLedRgb(255, 0, 0);
+  } else {
+    displayLedRgb(s.statsStale ? 255 : 0, s.statsStale ? 96 : 0, 0);
+  }
 }

@@ -297,6 +297,7 @@ static void sendStats(uint64_t now) {
   // the pack moves on a timescale of hours, so a minute-old reading is as good
   // as a fresh one and costs nothing.
   uint16_t mv = batteryReadMv();
+  const BatteryLevel level = batteryLevelUpdate(mv);
 
   ElevStats s;
   s.txId       = ELEV_TX_ID;
@@ -310,7 +311,8 @@ static void sendStats(uint64_t now) {
   s.stops      = clampU16((double)bc.stops);
   s.uptimeS    = (uint32_t)(now / US_PER_S);
   s.flags      = elevStatsFlagsByte(sensorErr, bc.modelReady, nvsModelRestored(),
-                                    batteryIsLow(mv));
+                                    level >= BATTERY_LOW,
+                                    level == BATTERY_CRITICAL);
   s.tempC      = (int8_t)constrain(lround(probeSample.temperatureC), -128L, 127L);
 
   size_t len = elevStatsPack(packetBuf, sizeof(packetBuf), &s);
@@ -322,7 +324,7 @@ static void sendStats(uint64_t now) {
     Serial.printf("[tx] STATS seq=%u %u mV%s %.1f C | pitch=%u mm floors=%u "
                   "trips=%u stops=%u | %lu m total, %u m/24h | up %lu s "
                   "flags=0x%02X\n",
-                  s.seq, s.batteryMv, batteryIsLow(mv) ? " LOW" : "",
+                  s.seq, s.batteryMv, level != BATTERY_OK ? " LOW" : "",
                   probeSample.temperatureC, s.pitchMm, s.nFloors, s.trips,
                   s.stops, (unsigned long)s.distTotalM, s.dist24hM,
                   (unsigned long)s.uptimeS, s.flags);
@@ -596,11 +598,12 @@ void setup() {
   seenReady = monitor.modelReady();
 
   uint16_t mv = batteryReadMv();
+  const BatteryLevel level = batteryLevelUpdate(mv);
   Serial.printf("[tx] txId=%d  probe %d ms / algorithm %d ms / STATE %d ms "
                 "(+%d ms hold) / STATS %d ms  battery %u mV%s\n",
                 ELEV_TX_ID, STILLNESS_PROBE_INTERVAL_MS, FLOOR_SAMPLE_INTERVAL_MS,
                 STATE_INTERVAL_MS, STATE_HOLD_AFTER_STOP_MS, STATS_INTERVAL_MS,
-                mv, batteryIsLow(mv) ? " LOW" : "");
+                mv, level != BATTERY_OK ? " LOW" : "");
 
   uint64_t now = nowUs();
   lastProbeUs = now;
