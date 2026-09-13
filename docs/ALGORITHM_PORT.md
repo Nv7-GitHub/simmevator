@@ -336,6 +336,34 @@ nothing about it, which is a wrong answer that looks like a right one, and
 `datum()` and `posFloors` would go quietly wrong rather than falling back to the
 nominal grid. `test_read_paths_do_not_alias_an_out_of_range_index` pins it.
 
+### 4.5 A restore brings back the building, not the position
+
+The Python never restarts, so it never has to decide what to believe about a
+saved position. The firmware does, and the answer is: nothing.
+
+`restore()` loads the pitch, the ladder, the stop counts and the odometer. It
+does not load `ref_`, which is an absolute altitude the weather has moved since
+it was saved; `refFromLive_` takes it from the first sample instead, without the
+cold-boot branch that would overwrite the ladder. And it keeps the saved floor
+index only as a placeholder, setting `positionUnknown_`.
+
+While unknown, the broadcast reports `modelReady = false`, so the transmitter
+sends floor 0 and every display shows `--`. `confirm()` still counts the stop but
+skips `bumpStopCount()` and `learn()`, because the index they would write to may
+be shifted by whole floors. `anchorStep()`, called on every arrival, tracks the
+span of indices seen since boot. When it equals the learned span, the lowest
+index seen must be the lowest landing, the shift is applied to `floor_`,
+`departFloor_` and the unconfirmed landing, and the index-keyed revisit history is
+dropped. A span wider than the building restarts the search.
+
+None of this runs in the replay, which never restores - the floor sequence is
+still identical to the Python. `test_restore_withholds_the_floor_until_both_ends_are_visited`
+covers it: a four-landing model is saved on the top floor, restored with the car
+elsewhere and 5 m of weather added, and the floor stays withheld through a visit
+to the top and appears, correct, after the visit to the bottom. Against the old
+restore that test fails. `test_cold_boot_is_never_position_unknown` checks a
+fresh node is not held back on the same account.
+
 ---
 
 ## 5. The verification

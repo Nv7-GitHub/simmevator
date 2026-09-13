@@ -593,6 +593,63 @@ void test_restore_reports_the_shorter_odometer_window(void) {
   TEST_ASSERT_EQUAL_UINT32(3u, fresh.stops());
 }
 
+// The scenario the anchor exists for: the pack comes off to charge, the car
+// keeps running, and the weather moves while the node is dark. Both halves of
+// the saved position are then wrong - the floor (the car moved) and the
+// reference (the pressure moved) - so neither may reach a display until the
+// car has been seen at both ends of the building.
+void test_restore_withholds_the_floor_until_both_ends_are_visited(void) {
+  // Learn a four-landing building, 0..3, and power off parked on the top.
+  Rider r;
+  r.hint(kPitch);
+  r.hold(0.0, kDwellS);
+  for (int k = 1; k <= 3; k++) r.moveTo((k - 1) * kPitch, k * kPitch, kRideS);
+  FloorModelState s;
+  r.fm.save(&s);
+
+  // Back on: the car is now at landing 1, and the weather has added 5 m of
+  // apparent altitude - most of two floors, and far past the half-pitch a
+  // single trip can absorb.
+  const double wx = 5.0;
+  Rider b;
+  TEST_ASSERT_TRUE(b.fm.restore(&s));
+  TEST_ASSERT_TRUE(b.fm.positionUnknown());
+
+  b.hold(1 * kPitch + wx, kDwellS);
+  TEST_ASSERT_FALSE(b.b.modelReady);   // what the transmitter turns into "--"
+
+  // Top first. The span seen is two floors of a three-floor building: still
+  // ambiguous, still withheld.
+  b.moveTo(1 * kPitch + wx, 3 * kPitch + wx, 2 * kRideS);
+  TEST_ASSERT_TRUE(b.fm.positionUnknown());
+  TEST_ASSERT_FALSE(b.b.modelReady);
+
+  // Then the bottom. Now exactly one offset fits, and it is applied.
+  b.moveTo(3 * kPitch + wx, 0 * kPitch + wx, 3 * kRideS);
+  TEST_ASSERT_FALSE(b.fm.positionUnknown());
+  TEST_ASSERT_TRUE(b.b.modelReady);
+  TEST_ASSERT_EQUAL_INT(1, b.b.floor);
+
+  // And it tracks correctly from there.
+  b.moveTo(0 * kPitch + wx, 2 * kPitch + wx, 2 * kRideS);
+  TEST_ASSERT_EQUAL_INT(3, b.b.floor);
+
+  // Nothing was learned into the wrong slots while the offset was unknown.
+  TEST_ASSERT_EQUAL_INT(4, b.fm.nFloors());
+  TEST_ASSERT_EQUAL_UINT32(0u, b.fm.anchorRestarts());
+}
+
+// A cold boot has nothing restored and nothing to anchor: the floor must not be
+// withheld on that account, or a fresh node would show "--" forever.
+void test_cold_boot_is_never_position_unknown(void) {
+  Rider r;
+  r.hint(kPitch);
+  r.hold(0.0, kDwellS);
+  r.moveTo(0.0, kPitch, kRideS);
+  TEST_ASSERT_FALSE(r.fm.positionUnknown());
+  TEST_ASSERT_TRUE(r.b.modelReady);
+}
+
 void test_restore_rejects_a_foreign_schema(void) {
   Rider r;
   r.hint(kPitch);
@@ -743,6 +800,8 @@ int main(int, char **) {
   RUN_TEST(test_clamp_tolerates_swapped_bounds);
   RUN_TEST(test_millis_wrap_does_not_slam_the_reference);
   RUN_TEST(test_restore_reports_the_shorter_odometer_window);
+  RUN_TEST(test_restore_withholds_the_floor_until_both_ends_are_visited);
+  RUN_TEST(test_cold_boot_is_never_position_unknown);
   RUN_TEST(test_restore_rejects_a_foreign_schema);
   RUN_TEST(test_table_clamp_survives_the_nvs_round_trip);
   RUN_TEST(test_read_paths_do_not_alias_an_out_of_range_index);

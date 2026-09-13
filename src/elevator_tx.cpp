@@ -449,7 +449,10 @@ static void stepAlgorithm(uint64_t now) {
                   bc.floor, bc.moving ? "moving" : "stopped",
                   directionName(bc.direction), bc.posFloors, bc.confidence,
                   bc.pitch, bc.nFloors, bc.rise,
-                  bc.modelReady ? "" : "(model not ready)");
+                  bc.modelReady ? ""
+                  : monitor.positionUnknown()
+                      ? "(position unknown - ride to the bottom and top floors)"
+                      : "(model not ready)");
   }
 
   // A confirmed stop is the only thing that changes the ladder, the stop counts

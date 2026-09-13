@@ -419,6 +419,23 @@ not a charging strategy.
 **Disconnect the pack at the spade terminals before charging.** The spade pair
 exists for exactly this.
 
+What the rest of the system does while it is off, and when it comes back:
+
+| | screens |
+|---|---|
+| pack off | keep the last floor for 2.5 min, dim, then at 3 min grey out with the LED amber. A CHARGE BATTERY warning stays red throughout |
+| pack back on | within a minute the STATS heartbeat arrives, the screens un-grey, and a charged pack clears the battery warning. No pairing, nothing to press |
+| until the car visits **floor 1 and floor 10** | the floor shows `--` |
+| after that | normal |
+
+The `--` is deliberate. The transmitter keeps the learned building across a
+reboot, but not the car's position: the car may have moved and the weather will
+have shifted the pressure reference, and a floor restored one out would stay one
+out forever. Seeing both ends of the building fixes the position exactly. **So
+after reconnecting, ride to floor 1 and floor 10.** It does not correct itself
+over time without that, and it does not need to - the first time the car
+naturally visits both ends it locks in.
+
 ### Voltage to state of charge
 
 From spec 3.2, set in `battery.h` as `VBAT_WARN_MV` / `VBAT_CRITICAL_MV` /

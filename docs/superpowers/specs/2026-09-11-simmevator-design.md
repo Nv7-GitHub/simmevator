@@ -385,9 +385,28 @@ when something has changed**. That is 288 writes/day. Saving on every confirmed
 stop would be ~2000/day, which is a flash-endurance problem: the reference capture
 has 256 confirmed stops in 3 h.
 
-On boot the model is restored and `modelReady` is set immediately, so a reboot or
-battery swap does not restart the 5-minute bootstrap. A genuinely fresh unit still
-withholds output until the pitch is established, per ALGORITHM.md §8.
+On boot the **building model** is restored - pitch, the height ladder, stop
+counts, the odometer - so a reboot or battery swap does not restart the 5-minute
+bootstrap. The car's **position is not restored**, and an earlier version of this
+section got that wrong:
+
+- The saved altitude reference is absolute, and weather moves it by metres over
+  the hours a pack spends charging. It is re-taken from the first live sample.
+- The saved floor is up to 5 minutes old even after a momentary blip, and
+  arbitrarily stale if the car ran while the node was dark. The algorithm has no
+  absolute anchor (ALGORITHM.md §8), so an index that starts a floor out would
+  stay a floor out forever.
+
+So after a restore the node **withholds the floor (screens show `--`) until the
+car has been seen at both the lowest and the highest learned landing**. At that
+point exactly one offset fits the trip history, and it is applied. After putting
+the pack back, ride to floor 1 and floor 10, in either order. A span of visits
+wider than the building means a rounding went wrong, and the search restarts
+rather than locking in a bad offset. While unanchored, stops still count on the
+odometer but teach nothing to the ladder, since their indices may be shifted.
+
+A genuinely fresh unit still withholds output until the pitch is established,
+per ALGORITHM.md §8.
 
 A stored record carries a schema version and a CRC; a mismatch is discarded and
 treated as a cold boot.

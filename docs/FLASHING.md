@@ -540,13 +540,19 @@ So, the sequence someone should expect on a brand-new install:
 | Minute 0 | Boot lines, NVS reports empty, screens show a dash |
 | Minute 2 | Still a dash. **This is the moment people conclude it is broken.** It is not |
 | ~Minute 5, given normal traffic | Pitch and floor count settle, the model goes ready, screens start showing numbers and they stay right |
-| Every reboot after that | Immediate. The model is restored from NVS, `modelReady` is set at boot, and there is no second bootstrap |
+| Every reboot after that | Screens show a dash **until the car has visited the bottom floor and the top floor**, in either order. Then the floor appears and is right. No second bootstrap |
 
-That last row is the reason persistence exists. A battery swap, a reset, a
-reflash of unrelated code - none of them cost you another bootstrap window,
-because the learned pitch, height ladder and floor index come back out of
-flash. `nvsModelLoad()` reporting `NVS_MODEL_OK` at boot is exactly that
+A battery swap, a reset, a reflash of unrelated code - none of them cost you
+another five-minute bootstrap, because the learned pitch and height ladder come
+back out of flash. `nvsModelLoad()` reporting `NVS_MODEL_OK` at boot is that
 happening.
+
+What does *not* come back is where the car is. The weather moves the pressure
+reference while the node is off, and the car may have moved too, and a floor
+restored one out would stay one out forever. So the node waits until it has seen
+both ends of the building, which pins the position exactly. The transmitter's
+serial log says `(position unknown - ride to the bottom and top floors)` while it
+waits. **After every battery swap: ride to floor 1 and floor 10.**
 
 The one case where you *want* the bootstrap back is a node moved to a different
 building, where the learned pitch and ladder are wrong rather than stale.

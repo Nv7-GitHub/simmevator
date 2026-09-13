@@ -7,3 +7,4 @@ __pycache__/
 *.pyc
 .venv/
 sim/cpp_broadcasts.csv
+.DS_Store

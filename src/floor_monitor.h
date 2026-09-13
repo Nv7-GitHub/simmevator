@@ -411,6 +411,21 @@ class FloorMonitor {
 
     rollOdometer(t);
 
+    // First sample after restore(). The building model came back from NVS but
+    // the reference did not: see restore() for why. Take it from this reading
+    // and keep the model - the cold-boot branch below would overwrite the
+    // learned ladder with a single floor at height 0.
+    if (refFromLive_) {
+      ref_ = alt;
+      ref0_ = alt;
+      level_ = alt;
+      t_ = t;
+      t0_ = t;
+      refSet_ = true;
+      refFromLive_ = false;
+      return out(t);
+    }
+
     if (!refSet_) {
       ref_ = alt;
       refSet_ = true;
@@ -547,6 +562,11 @@ class FloorMonitor {
 
   bool modelReady() const { return pitchSet_ && pitch_ != 0.0; }
 
+  // True after a restore until the car has been seen at the lowest and highest
+  // learned landings. See anchorStep().
+  bool positionUnknown() const { return positionUnknown_; }
+  uint32_t anchorRestarts() const { return anchorRestarts_; }
+
   // ---- diagnostics the replay harness and the STATS packet read ---------
   double pitch() const { return pitch_; }
   int floorIndex() const { return floor_; }
@@ -616,10 +636,30 @@ class FloorMonitor {
     if (s->tableClamped) return false;
     clearState();
     pitchSet_ = (s->pitchSet != 0);
-    refSet_ = (s->refSet != 0);
     pitch_ = s->pitch;
-    ref_ = s->ref;
-    level_ = s->ref;
+
+    // The building model is restored; the car's POSITION is not trusted. Both
+    // halves of a saved position go wrong across a reboot:
+    //
+    //  * ref is an absolute altitude, and the weather moves it - up to ~7 m in
+    //    an hour in the reference capture. The first trip after boot would be
+    //    measured against a reference metres out and round to the wrong floor.
+    //    So it is re-taken from the first live sample instead (refFromLive_).
+    //
+    //  * floor is whatever it was at the last save, which is up to
+    //    NVS_SAVE_INTERVAL_MS old even after a one-second power blip, and
+    //    arbitrarily stale after the pack has been off charging while the car
+    //    kept running. The algorithm integrates floor changes and has no
+    //    absolute anchor (ALGORITHM.md section 8), so an index that starts one
+    //    floor out stays one floor out forever.
+    //
+    // So the saved floor is kept only as a placeholder that keeps indices inside
+    // the table, and the position is marked unknown until the car has been seen
+    // at both the lowest and the highest learned landing - at which point there
+    // is exactly one offset that fits, and it is applied. Until then the node
+    // broadcasts no floor, and every display shows "--". See anchorStep().
+    refSet_ = false;
+    refFromLive_ = (s->refSet != 0);
     floor_ = s->floor;
     occupied_ = s->occupied;
     for (int k = 0; k < FLOOR_TABLE_N; k++) {
@@ -629,6 +669,9 @@ class FloorMonitor {
     distanceM_ = s->distanceM;
     trips_ = s->trips;
     stops_ = s->stops;
+    positionUnknown_ = pitchSet_ && nFloors() >= 2;
+    seenMin_ = floor_;
+    seenMax_ = floor_;
     // The hour buckets are not loaded. They are indexed by uptime, and uptime
     // restarts at 0 on the boot that reads them, so there is nothing in the
     // record - and, with no RTC, nothing anywhere on the node - that says how
@@ -828,6 +871,44 @@ class FloorMonitor {
     uJumpTrue_ = jumpTrue;
     uN_ = n;
     uLevel_ = level;
+    if (positionUnknown_) anchorStep();
+  }
+
+  // Locks the position after a restore once only one offset fits.
+  //
+  // The car cannot go below the lowest learned landing or above the highest.
+  // Every arrival extends the span of indices seen since boot; once that span
+  // equals the learned span, the lowest index seen must BE the lowest landing,
+  // and the shift is fixed. A span wider than the building means a rounding
+  // went wrong somewhere in between, so the search restarts from here rather
+  // than locking in a bad offset - "--" for a little longer is recoverable, a
+  // confidently wrong floor on ten screens is not.
+  //
+  // In practice: after putting the pack back, ride to the bottom floor and the
+  // top floor, in either order.
+  void anchorStep() {
+    if (floor_ < seenMin_) seenMin_ = floor_;
+    if (floor_ > seenMax_) seenMax_ = floor_;
+    const int lo = minIndex();
+    const int span = maxIndex() - lo;
+    const int seen = seenMax_ - seenMin_;
+    if (seen > span) {
+      anchorRestarts_++;
+      seenMin_ = floor_;
+      seenMax_ = floor_;
+      return;
+    }
+    if (seen < span) return;
+
+    const int shift = lo - seenMin_;
+    floor_ += shift;
+    departFloor_ += shift;
+    uFloor0_ += shift;
+    // Revisit history is keyed by floor index, so its keys are off by `shift`.
+    // Dropping it costs one revisit gap before the weather rate is measured
+    // again; moving it would be more code for a few minutes of estimate.
+    for (int k = 0; k < FLOOR_TABLE_N; k++) lastSeen_[k] = false;
+    positionUnknown_ = false;
   }
 
   // A dwell that held is a real landing: count it and learn from it.
@@ -838,10 +919,16 @@ class FloorMonitor {
     double level = uLevel_;
     unconfirmed_ = false;
     stops_++;
-    bumpStopCount(floor_);
-    refinePitch(jumpTrue, n);
-    double base = heightOf(floor0);
-    learn(floor_, base + jumpTrue);
+    refinePitch(jumpTrue, n);   // index-free: a jump over n floors is n pitches
+    if (!positionUnknown_) {
+      // With the position unanchored, floor_ may be off by a whole number of
+      // floors, and learning would write this landing's height into another
+      // floor's slot. The ladder is already trusted - it came from NVS - so
+      // skipping it until the anchor locks loses nothing.
+      bumpStopCount(floor_);
+      double base = heightOf(floor0);
+      learn(floor_, base + jumpTrue);
+    }
     revisitRate(level);
   }
 
@@ -940,7 +1027,9 @@ class FloorMonitor {
     b.posFloors = (pitchSet_ && pitch_ != 0.0) ? (level_ - b.datum) / pitch_ : 0.0;
     b.direction = direction();
     b.dist24hM = dist24hM();
-    b.modelReady = modelReady();
+    // The transmitter already sends floor 0 ("--") and no posQ8 unless the
+    // model is ready, so an unanchored position rides on the same flag.
+    b.modelReady = modelReady() && !positionUnknown_;
     last_ = b;    // what a dropped sample re-serves, rather than a zeroed frame
     return b;
   }
@@ -1165,6 +1254,11 @@ class FloorMonitor {
   uint32_t passthroughs_;
   bool     tableClamped_;
   bool     restored_;
+  bool     refFromLive_;       // restored: take ref_ from the next sample
+  bool     positionUnknown_;   // restored: floor_ offset not yet anchored
+  int      seenMin_;           // index span seen since the restore
+  int      seenMax_;
+  uint32_t anchorRestarts_;
   bool     sensorErr_;
   uint32_t sensorRejects_;
 
