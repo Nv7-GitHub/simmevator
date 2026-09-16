@@ -99,13 +99,12 @@ happily floods nothing.
 
 **Do this before the USB cable goes in. Every time.**
 
-The car node is powered by feeding the MP1584EN buck's 3.3 V output directly
-into the XIAO's **3V3 pad**, bypassing the XIAO's onboard LDO. That is the
-efficient path and it is why the power budget works. It also means that when
-USB is plugged in, two regulators are driving the same 3V3 rail: the buck from
-the battery side and the XIAO's LDO from the USB 5 V side. Neither knows about
-the other. Whichever sits marginally higher sources current into the other's
-output, and nothing in that arrangement is current limited by design.
+The car node is powered by feeding the MP1584EN buck's 5 V output into the
+XIAO's **5V pad**, which is the board's supply input. That pad and the USB
+connector's VBUS are the same node, so plugging in USB while the pack is
+connected ties the buck's output straight to the host's 5 V rail - two supplies
+across each other, with the buck also back-feeding whatever you are flashing
+from. Nothing in that arrangement is current limited by design.
 
 So: pull the spade terminals, then plug in USB. That is what the spade
 terminals are for - they exist so the pack can come off for charging, and
@@ -114,9 +113,10 @@ flashing is the same disconnect.
 The bridge and the displays have no battery and no second supply. Plug them in
 and go.
 
-While the terminals are off, it is also worth confirming the buck is still set
-to 3.3 V before reconnecting - see `docs/HARDWARE.md`. An MP1584's trim pot is
-a screw that a jostled enclosure can move.
+While the terminals are off, it is also worth metering the buck's output before
+reconnecting - see `docs/HARDWARE.md`. It should read 5 V, and if your module
+has a trim pot rather than a fixed output, that is a screw a jostled enclosure
+can move.
 
 ---
 

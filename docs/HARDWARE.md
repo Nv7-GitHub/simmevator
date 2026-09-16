@@ -31,7 +31,7 @@ the note after the tables before you add anything back.
 | BMP390 breakout | 1 | Adafruit 4816 or equivalent |
 | LiFePO4 12.8 V 10 Ah pack with BMS | 1 | 4S; BMS required |
 | LiFePO4 charger, 14.6 V | 1 | a Li-ion or lead-acid charger will not terminate correctly |
-| MP1584EN buck module | 1 | set to 3.3 V **before** connecting the XIAO |
+| MP1584EN 5 V buck module | 1 | meter it at 5 V **before** connecting the XIAO |
 | Resistor 100 kΩ 1% | 1 | divider top |
 | Resistor 20 kΩ 1% | 1 | divider bottom |
 | Spade terminal pair | 1 | so the pack can come off for charging |
@@ -84,7 +84,8 @@ Not in the parts list, but you cannot do section 3 without them:
 
 - **A multimeter.** Non-negotiable. Section 3.4 is entirely a meter procedure.
 - Soldering iron, thin solder, heat-shrink.
-- A small flat screwdriver or trimmer tool that fits the MP1584EN's pot.
+- A small flat screwdriver or trimmer tool, if your buck module has a trimpot
+  rather than a fixed 5 V output.
 - Wire strippers, and a crimp tool if your spade terminals are crimp type.
 - A USB-C cable for flashing - and a habit of not having it plugged in at the
   same time as the pack (section 3.5).
@@ -103,7 +104,7 @@ Everything the car node uses, in one table. From spec 3.1, `lora_link.h`, and
 | SX1262 SCK / MISO / MOSI | D8 / D9 / D10 | 7 / 8 / 9 | the stack, no wire |
 | SX1262 NSS / DIO1 / BUSY / NRST | - | 41 / 39 / 40 / 42 | the stack, no wire |
 | battery sense | D0 | 1 (ADC1_CH0) | your divider |
-| 3.3 V in | 3V3 | - | the buck |
+| 5 V in | 5V | - | the buck |
 | ground | GND | - | common with the pack minus |
 
 The BMP390 runs on `Wire1` at 400 kHz, address 0x77. The radio is 915 MHz,
@@ -202,7 +203,7 @@ the pack's range comfortably inside the part of the range that behaves, with
 headroom at the top for a charger that overshoots.
 
 Divider draw is ~122 µA at 14.6 V, which is about 0.5% of the ~23 mA average
-the 30-day budget is built on - roughly a third of a day off the ~56-day
+the 30-day budget is built on - roughly a quarter of a day off the ~50-day
 figure. That is why there is no switching MOSFET across it -
 the switch would cost more parts and more ways to fail than it saves.
 
@@ -228,28 +229,30 @@ the same everywhere.
 
 There is deliberately no capacitor here. See section 1.1.
 
-### 3.4 Set the buck regulator
+### 3.4 Check the buck regulator's output
+
+The buck feeds the XIAO's **5V pad**, not its 3V3 pad. The 3V3 pad is the
+output of the XIAO's own regulator, so driving it means fighting that regulator;
+the 5V pad is the board's supply input, which that regulator exists to convert.
 
 > ### STOP. This is the step that destroys hardware.
 >
-> The MP1584EN module arrives with its trimpot at **whatever position it was
-> left in on the production line**. That is not 3.3 V, and there is no reason
-> for it to be anywhere near 3.3 V. The module's adjustment range runs from
-> under a volt to within shouting distance of its input, so fed from a 12.8 V
-> pack it can present a voltage at its output that is many times what an
-> ESP32-S3 and a BMP390 will survive.
+> The module is sold as a fixed 5 V output, but check it before you believe it.
+> Some MP1584EN boards carry a trimpot instead, and one of those arrives set to
+> **whatever position it was left in on the production line**. The adjustment
+> range runs from under a volt to within shouting distance of the input, so fed
+> from a 12.8 V pack a mis-set module can put far more than 5 V onto the pad.
 >
-> Feeding the XIAO's 3V3 pad goes **straight past the XIAO's own LDO** - there
-> is nothing between the buck's output and the chip. Whatever the pot is set to
-> is what the silicon gets.
+> The XIAO's own regulator stands between that pad and the chip, so it takes
+> the hit first - but it is an SGM6029, rated for 5.5 V in. There is almost no
+> headroom above 5 V, and past it the failure reaches the silicon behind it.
 >
-> **Set the output with nothing connected to it. Meter it. Only then wire it to
-> the XIAO.**
+> **Meter the output with nothing connected to it. Only then wire it to the
+> XIAO.**
 >
-> There is no recovery step for getting this wrong. Check the ESP32-S3
-> datasheet's absolute-maximum supply figure before you decide a reading is
-> close enough; this document deliberately does not quote you a number to feel
-> comfortable about.
+> Check the XIAO ESP32S3 datasheet's input rating before you decide a reading
+> is close enough; this document deliberately does not quote you a number to
+> feel comfortable about.
 
 Procedure:
 
@@ -258,32 +261,29 @@ Procedure:
 2. Wire the pack to the buck input through the spade pair, minding polarity.
    IN+ to pack positive, IN− to pack negative.
 3. Meter across the buck's OUT+ and OUT−, DC volts, on a range that covers
-   15 V - not a 3 V range that will just say "OL" while the pot is high.
-4. Turn the pot in small increments and watch the meter. Do not assume which
-   way is up, and do not assume a quarter turn will do anything: some of these
-   modules carry multi-turn trimmers and take many revolutions to cross the
-   range. Turn, read, turn, read.
-5. Land on **3.30 V**. A few tens of millivolts under is fine and is the safer
-   side to err on.
-6. Disconnect the pack. Wait, re-connect, and confirm it still reads 3.3 V -
-   you want to know the pot is actually set and not just resting where your
-   screwdriver left it.
+   15 V - not a 3 V range that will just say "OL" if the output is high.
+4. It should read **5.0 V**. If it does and the board has no trimpot, you are
+   done with this step.
+5. If the board does have a trimpot, turn it in small increments and watch the
+   meter. Do not assume which way is up, and do not assume a quarter turn will
+   do anything: some of these modules carry multi-turn trimmers and take many
+   revolutions to cross the range. Turn, read, turn, read. Land on **5.0 V**.
+6. Disconnect the pack. Wait, re-connect, and confirm it still reads 5 V.
 
 The MP1584 is PWM-only with no light-load PFM mode (spec 3.3), so it does not
 pulse-skip and the no-load reading you just took is representative of the
-loaded one. Re-measure once with the node running anyway, at the XIAO's 3V3 pad
+loaded one. Re-measure once with the node running anyway, at the XIAO's 5V pad
 rather than at the buck, so the measurement includes your wiring.
 
 That same PWM-only behaviour is why the node's ~3 mA light-sleep current is
-served badly by this module. It runs ~80-85% at the ~23 mA average, which is
-what the 30-day budget in spec 2 assumes. A TPS62203 or MP2338 would recover a
-few days. Not required.
+served badly by this module. It runs ~80-85% at the ~23 mA average. A TPS62203
+or MP2338 would recover a few days. Not required.
 
 ### 3.5 Wire the buck to the XIAO, and never plug in USB at the same time
 
-Only after section 3.4 reads 3.3 V:
+Only after section 3.4 reads 5 V:
 
-1. Buck OUT+ → XIAO **3V3** pad.
+1. Buck OUT+ → XIAO **5V** pad.
 2. Buck OUT− → XIAO **GND**, and the same ground node as the divider's bottom
    leg and the pack minus. One ground, not two.
 3. Divider top leg to pack positive on the buck-input side of the spade pair,
@@ -292,25 +292,31 @@ Only after section 3.4 reads 3.3 V:
 The power chain, end to end (spec 3.3):
 
 ```
-LiFePO4 4S 10 Ah → spade terminals → MP1584EN buck at 3.3 V → XIAO 3V3 pad
+LiFePO4 4S 10 Ah → spade terminals → MP1584EN buck at 5 V → XIAO 5V pad
+  → XIAO's onboard SGM6029 buck → 3.3 V for the chip, the radio and the BMP390
 ```
 
-Feeding the 3V3 pad bypasses the XIAO's onboard LDO. That is the efficient
-path, and it is the whole reason the buck exists - running 12.8 V into a linear
-regulator would burn the battery budget as heat.
+**The second conversion costs about a tenth of the battery.** The XIAO's
+onboard regulator is an SGM6029 synchronous buck - not a linear regulator - with
+a power-save mode and 2.3 µA of quiescent current, so at these loads it is worth
+roughly 85-90% rather than the 66% a linear part would manage. Behind the
+module's own ~85%, the pack sees about 7.9 mA for the node's 23 mA average,
+which is ~50 days against the ~56 the same node would get if the 3.3 V rail
+could be fed directly. Feeding 3V3 would recover those few days at the cost of
+back-driving that regulator, which is why it is not done here. Both efficiency
+figures are datasheet-grade estimates, not measurements.
 
 > **USB and the buck must never be connected at the same time.**
 >
-> The XIAO's 3V3 pad is its LDO's *output*. Plug in USB and the LDO drives that
-> node from 5 V; connect the pack and the buck drives the same node from 3.3 V.
-> Two regulators, hard outputs tied together, neither one current-limited in
-> the direction of the other.
+> The XIAO's 5V pad and its USB connector's VBUS are the same node. Connect
+> both and the buck's output is tied directly to the host's 5 V rail - two
+> supplies across each other, and the buck's output is also back-fed into
+> whatever you are flashing from.
 >
-> Whichever sits higher sources current into the other one's output stage. The
-> 12.8 V pack has the energy to keep doing that indefinitely. It may survive;
-> it may take out the buck, the XIAO's LDO, or the USB port on whatever you are
-> flashing from. It is not a failure with a predictable outcome, which is
-> exactly why it is not worth characterising empirically on your only XIAO.
+> The 12.8 V pack has the energy to keep doing that indefinitely. It may
+> survive; it may take out the buck, the XIAO, or the USB port on your
+> computer. It is not a failure with a predictable outcome, which is exactly
+> why it is not worth characterising empirically on your only XIAO.
 >
 > **Unplug the pack at the spade terminals before you plug in USB.** Every
 > time. That is what the spade pair is for as much as charging is.
@@ -444,7 +450,7 @@ From spec 3.2, set in `battery.h` as `VBAT_WARN_MV` / `VBAT_CRITICAL_MV` /
 | voltage | what every screen shows | notice at ~23 mA |
 |---|---|---|
 | 13.3 V | rested full - clears any warning | - |
-| **12.8 V** | **CHARGE SOON**: amber badge in place of the battery bar, voltage in amber | ~3.5 days (~20% left) |
+| **12.8 V** | **CHARGE SOON**: amber badge in place of the battery bar, voltage in amber | ~3 days (~20% left) |
 | **12.0 V** | **CHARGE BATTERY**: steady red banner across the bottom, red badge, onboard LED steady red | under 2 days (~10% left) |
 | ~10 V | the BMS disconnects the pack and the car node goes silent | - |
 
@@ -467,9 +473,9 @@ The thresholds sit on the flat part of the curve, where ±2-3% uncalibrated
 accuracy is about ±0.4 V. **Do the one-time calibration** (above) or CHARGE SOON
 may come days early or not until CHARGE BATTERY.
 
-Expect to charge roughly every two months if the node is behaving: spec 2
-budgets ~23 mA average at evening-peak traffic, which is ~56 days, against a
-30-day requirement.
+Expect to charge roughly every seven weeks if the node is behaving: spec 2
+budgets ~23 mA average at evening-peak traffic, which is ~50 days through the
+module and the XIAO's own regulator, against a 30-day requirement.
 
 ---
 
@@ -564,8 +570,8 @@ connected. Each line is here because getting it wrong costs a board.
 | 1 | No shorts on the pack rail | meter in continuity/resistance across the spade pair, pack off | not a short. You should read roughly the divider's 120 kΩ in parallel with whatever the buck input looks like. A beep here means stop. |
 | 2 | Polarity, pack to buck | trace IN+ to pack positive and IN− to pack negative by eye and by meter | the buck's silkscreen agrees with the wires |
 | 3 | Ground is one node | continuity: XIAO GND to buck OUT− to divider bottom leg to pack minus | all four beep together |
-| 4 | **Buck output is 3.3 V** | section 3.4, with the output disconnected from everything | 3.30 V ± a few tens of mV on the meter, checked after a power cycle |
-| 5 | Buck output polarity | OUT+ goes to the **3V3** pad, not 5V, not any signal pad | read the silkscreen twice |
+| 4 | **Buck output is 5 V** | section 3.4, with the output disconnected from everything | 5.0 V on the meter, checked after a power cycle |
+| 5 | Buck output polarity | OUT+ goes to the **5V** pad, not 3V3, not any signal pad | read the silkscreen twice |
 | 6 | Divider ratio is sane | meter R1 and R2 in circuit: ~100 kΩ top, ~20 kΩ bottom | ratio near 6.0. If R1 and R2 got swapped the pin sees 5/6 of the pack - over 10 V straight onto a 3.3 V pin. |
 | 7 | Divider tap goes to D0 | continuity from the R1/R2 junction to the D0 pad | beeps, and does **not** beep to D1, 3V3 or GND |
 | 8 | Nothing on D4/D5 but the BMP390 | visual | SDA to D4, SCL to D5, not crossed |
@@ -575,7 +581,8 @@ connected. Each line is here because getting it wrong costs a board.
 Then, in order:
 
 1. Connect the pack at the spade terminals.
-2. Meter the XIAO 3V3 pad against GND with the node running. Still 3.3 V.
+2. Meter the XIAO 5V pad against GND with the node running. Still 5 V. The
+   3V3 pad, now an output, should read 3.3 V.
 3. Check the serial console: the BMP390 should come up (and say which address
    it found), and `batteryBegin()` prints the divider and calibration
    configuration it was compiled with.

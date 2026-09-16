@@ -38,9 +38,14 @@ decides whether the battery lasts a month.
 
 ## 2. Power budget
 
-Battery: LiFePO4 4S, 12.8 V nominal, 10 Ah = 128 Wh. Through a buck regulator at
-~85% into 3.3 V that is ≈31 Ah at 3.3 V. For 30 days (720 h) the average draw
-must stay under **43 mA**.
+Battery: LiFePO4 4S, 12.8 V nominal, 10 Ah = 128 Wh. Through a buck module at
+~85% into 5 V, then the XIAO's onboard SGM6029 synchronous buck down to 3.3 V
+(~85-90% at these loads), that is ≈29 Ah at 3.3 V. For 30 days (720 h) the
+average draw must stay under **40 mA**.
+
+The 5V pad is fed rather than the 3V3 pad because 3V3 is that regulator's
+output, not an input. The second conversion costs ~10%, not the third a linear
+part would have cost. §3.3 has the trade.
 
 ### 2.1 Radio configuration
 
@@ -94,7 +99,7 @@ be paid for here.
 | STATE: 297 ms / 2 s × 140 mA × **0.90 active** | ~18.7 mA |
 | STATS: 494 ms / 60 s × 140 mA | ~1.2 mA |
 | divider + BMP390 | ~0.1 mA |
-| **total at evening-peak traffic** | **~23 mA → ~56 days** |
+| **total at evening-peak traffic** | **~23 mA → ~50 days** |
 
 140 mA is the SX1262 at +22 dBm (~118 mA) plus the ESP32-S3 awake **at 80 MHz**.
 That clock is not the board default — `TX_CPU_MHZ` pins it, because RadioLib
@@ -104,10 +109,10 @@ roughly doubles and this table is wrong by ~8 mA. Deep sleep is impossible: the
 algorithm needs an unbroken 1 Hz stream. Light sleep between samples is what
 makes the baseline 3 mA instead of ~25 mA.
 
-56 days still clears the one-month requirement, with about 1.9× margin at the
-*peak* traffic rate — a real week including nights does better. But the margin is
-smaller than the 68 days an earlier version of this table claimed, and that
-figure should not be quoted.
+50 days still clears the one-month requirement, with ~1.7× margin at the *peak*
+traffic rate — a real week including nights does better. The 56 days this table
+showed when the 3.3 V rail was fed directly, and the 68 days an earlier version
+claimed, should not be quoted.
 
 ### 2.3 What is arithmetic and what is measured
 
@@ -124,7 +129,7 @@ nobody knows their size yet:
 
 The first hardware session should put a meter on the 3.3 V rail for an hour
 before anyone trusts the day count. If the floor comes back at 8 mA rather than
-3, the month still holds and the 56 days does not.
+3, the month still holds and the 50 days does not.
 
 If measured life falls short, the knobs in order of preference are: STATE cadence
 2 s → 3 s (−5 mA), TX power 22 → 20 dBm (−2 mA), parked heartbeat 60 s → 120 s
@@ -179,7 +184,7 @@ the STATS flags:
 
 | threshold | level | screens show | notice at ~23 mA |
 |---|---|---|---|
-| < 12.8 V | LOW, ~20% left | amber CHARGE SOON badge | ~3.5 days |
+| < 12.8 V | LOW, ~20% left | amber CHARGE SOON badge | ~3 days |
 | < 12.0 V | CRITICAL, ~10% left | steady red CHARGE BATTERY banner, red LED | under 2 days |
 | ≥ 13.3 V | clears either | normal bar | - |
 
@@ -192,14 +197,17 @@ for the notice to be accurate.
 
 ### 3.3 Power chain
 
-`LiFePO4 4S 10 Ah → spade terminals → MP1584EN buck set to 3.3 V → XIAO 3V3 pad`.
+`LiFePO4 4S 10 Ah → spade terminals → MP1584EN buck at 5 V → XIAO 5V pad → the
+XIAO's onboard buck → 3.3 V`.
 
 The pack's own BMS provides the overcurrent and undervoltage protection, and the
 spade terminals are what let the pack come off the buck for charging.
 
-Feeding the 3V3 pad bypasses the XIAO's own LDO, which is the efficient path.
-**Do not connect USB and the buck at the same time** — the LDO output would be
-contested. Unplug the battery before flashing.
+The 5V pad is the board's supply input; the 3V3 pad is the output of the XIAO's
+onboard SGM6029 buck and is not fed. That second conversion turns ~56 days into
+~50 (§2), and a 3.3 V module into the 3V3 pad would recover them at the cost of
+back-driving that regulator. **Do not connect USB and the buck at the same time** — the 5V pad and
+USB VBUS are the same node. Unplug the battery before flashing.
 
 The MP1584 is PWM-only with no light-load PFM mode, so it is poor at the 3 mA
 sleep current but runs ~80–85% at the ~23 mA average, which is what §2 assumes. A
@@ -243,7 +251,7 @@ nothing outside this repo is edited.
 | BMP390 breakout | 1 | Adafruit 4816 or equivalent |
 | LiFePO4 12.8 V 10 Ah pack with BMS | 1 | 4S; BMS required |
 | LiFePO4 charger, 14.6 V | 1 | a Li-ion or lead-acid charger will not terminate correctly |
-| MP1584EN buck module | 1 | set to 3.3 V **before** connecting the XIAO |
+| MP1584EN 5 V buck module | 1 | meter it at 5 V **before** connecting the XIAO |
 | Resistor 100 kΩ 1% | 1 | divider top |
 | Resistor 20 kΩ 1% | 1 | divider bottom |
 | Spade terminal pair | 1 | so the pack can come off for charging |

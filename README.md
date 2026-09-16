@@ -9,7 +9,7 @@ read from down the corridor, an up/down arrow while the car is moving, the
 transmitter's battery voltage, and how far the elevator has travelled in the last
 day.
 
-The car node runs on a battery, unattended, for about two months.
+The car node runs on a battery, unattended, for about seven weeks.
 
 ---
 
@@ -85,7 +85,7 @@ does not cut off everything above it.
 
 Airtime is the entire power budget. A LoRa packet at SF10 costs hundreds of
 milliseconds at about 118 mA, and the car in this building is *moving* 71% of an
-evening peak. Thirty days off a 10 Ah LiFePO4 pack means staying under 43 mA
+evening peak. Thirty days off a 10 Ah LiFePO4 pack means staying under 40 mA
 average. Send a 297 ms packet every 2 s around the clock and the radio alone is
 ~21 mA; stay awake between samples and the baseline is ~25 mA instead of ~3 mA.
 Together that is ~47 mA - the requirement is missed before anything else has
@@ -102,7 +102,7 @@ Two changes fix it without making the display feel slower:
   constants were tuned for. Between samples the chip light-sleeps, which is the
   difference between a 3 mA baseline and a 25 mA one.
 
-That lands at roughly **23 mA average, about 56 days** on a 10 Ah LiFePO4 pack,
+That lands at roughly **23 mA average, about 50 days** on a 10 Ah LiFePO4 pack,
 using the evening-peak traffic rate — a real week including nights does better.
 
 That is arithmetic, not a measurement. No board has been on a meter yet, and the
