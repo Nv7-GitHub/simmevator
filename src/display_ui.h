@@ -458,9 +458,17 @@ enum DisplayCommission {
 // after every boot, and after every mesh outage longer than that - there is no
 // nFloors to compare, so a CHECK SHAFT here would appear on every power cycle
 // and clear itself a minute later. An alarm that cries wolf once a day is one
-// nobody reads, which would cost more than the minute of coverage it buys. The
-// screen is not confidently wrong in that window either: with no model the
-// floor renders as "--" (spec 4.6).
+// nobody reads, which would cost more than the minute of coverage it buys.
+//
+// Be clear about what that exception costs, because it is not nothing. STATE
+// arrives every 2 s while the car moves and carries the floor, so a display
+// that boots mid-trip renders a confident floor number out of the label table
+// straight away, while STATS - and therefore this entire check - can still be
+// most of a minute behind. In a mis-commissioned shaft that number is wrong,
+// and for that window nothing here says so. The window is bounded, it is
+// self-clearing, and it ends the moment the first heartbeat lands; it is not,
+// as an earlier version of this comment claimed, a window in which the screen
+// is showing "--" and cannot mislead anyone.
 inline DisplayCommission displayCommissionState(const DisplayUiState &s,
                                                 uint8_t labelCount) {
   if (labelCount == 0)      return DISPLAY_COMMISSION_MISMATCH;

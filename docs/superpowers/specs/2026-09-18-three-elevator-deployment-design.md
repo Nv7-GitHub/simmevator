@@ -46,20 +46,29 @@ systems and unchanged from today.
 ### 2.1 Why the LoRa link needs separate frequencies
 
 Three cars on one frequency is pure ALOHA with no carrier sense. A STATE packet
-is 297 ms and goes out every 2 s while the car is active; at the 71.2% active
-duty the reference capture shows for an evening peak, each car offers
-`0.5 x 0.712 = 0.356` packets per second. ALOHA's vulnerable window is two
-packet lengths, `2 x 0.297 = 0.594 s`, so the probability a given STATE packet
-survives two interferers is
+is 297 ms and goes out every 2 s while the stream is active. The right duty
+figure is **0.90, the STATE-active fraction, not the 0.712 moving fraction** -
+the 2026-09-11 spec §2.2 makes this correction in bold, and for the same reason
+it matters here: STATE is not gated on motion, it runs for
+`STATE_HOLD_AFTER_STOP_MS` (10 s) past every stop, and those packets are the
+same 297 ms at the same 22 dBm and collide identically. So each car offers
+`0.5 x 0.90 = 0.45` packets per second. ALOHA's vulnerable window is two packet
+lengths, `2 x 0.297 = 0.594 s`, so the probability a given STATE packet survives
+two interferers is
 
 ```
-P(survive) = exp(-2 x 0.356 x 0.594) = 0.656
+P(survive) = exp(-2 x 0.45 x 0.594) = exp(-0.5346) = 0.586
 ```
 
-**About one STATE packet in three is lost**, on top of the 5.21% the shaft
+**About two STATE packets in five are lost**, on top of the 5.21% the shaft
 already costs (`ALGORITHM.md` §9), and concentrated in exactly the evening peak
 when all three cars are busy simultaneously. That is not a degradation the
 display's staleness logic is designed to absorb.
+
+(`exp(-2G)` assumes Poisson arrivals and STATE is a periodic 0.5 Hz stream, so
+this is an estimate rather than a prediction. It does not need to be better than
+that: both the figure above and the one the moving fraction would give are
+decisively against sharing a frequency, which is the only decision it informs.)
 
 **A per-elevator sync word does not fix this and must not be mistaken for a
 fix.** The sync word is checked after preamble detection and demodulation; it
@@ -116,9 +125,15 @@ earshot must not share a channel.
 
 Adding an elevator id to the mesh envelope was considered and rejected. With the
 floods on separate channels, a display physically cannot receive another shaft's
-frames, so the field would never discriminate anything at runtime. The failure
-it would guard - a display flashed for the wrong shaft - is caught instead by
-§4, which detects it through data the wire already carries.
+frames, so the field would never discriminate anything at runtime.
+
+The same fact disposes of the failure it would have guarded. A display flashed
+for the wrong shaft is not shown the wrong car - it is **deaf**. It sits on a
+channel its landing's bridge does not transmit on, hears nothing at all, and
+stays on the boot splash. That is the loudest failure available: a screen that
+never comes up is noticed on the day it is installed, which is exactly when
+somebody is standing in front of it. An elevator field in the envelope would be
+one byte spent to detect a condition in which no bytes arrive.
 
 `MESH_VERSION` therefore stays 1, `MESH_MAGIC` stays 0x5E1E, and the envelope is
 byte-for-byte what is deployed today.
@@ -210,7 +225,7 @@ from STATE alone. `ELEV_FLAG_NVS_RESTORED` in STATS separates them, which is the
 "restored and trusted versus learned here" distinction `PROTOCOL.md` §3 already
 describes that flag as existing for.
 
-| `nFloors` (STATS) | `MODEL_READY` (STATE) | `NVS_RESTORED` (STATS) | screen |
+| `nFloors` | `MODEL_READY` | `NVS_RESTORED` | screen |
 |---|---|---|---|
 | `< labelCount` | 0 | 0 | **LEARNING** - big digits show `nFloors`, `OF 11` beneath |
 | `== labelCount` | 0 | 1 | **ANCHORING** - words, not digits: ride to both ends |
@@ -219,11 +234,24 @@ describes that flag as existing for.
 
 No wire change. No new flag. No reserved bit spent.
 
-The last row is the one that matters. A model that is ready and confident but
-reports a floor count the building does not have is either a car that never
-reached its lowest landing or a display carrying the wrong shaft's label table.
-Both are caught, and both are caught on every screen in the shaft rather than on
-a console.
+**All three inputs must be taken from STATS.** `MODEL_READY` is also in STATE,
+and reading it from there is wrong in a way that is not obvious: STATE only runs
+while the car moves plus a 10 s hold, so on a display that booted into a parked
+shaft it is false because nothing has arrived, not because the car said
+anything. Combined with an `nFloors` that did arrive, that reads as "full span,
+not ready" - ANCHORING - so every screen in a healthy parked shaft would ask to
+be ridden to both ends after any display reset. One packet, one snapshot.
+
+The last row is the one that matters: a model that is ready and confident but
+reports a floor count the building does not have. **It has exactly one cause** -
+a car that has never reached its lowest landing - and it necessarily appears on
+every screen in the shaft at once, because every display in a shaft carries the
+same label table and hears the same bridge.
+
+A display carrying the wrong shaft's label table is *not* a second cause, though
+it looks like one. Such a display is on the wrong mesh channel too, so it hears
+nothing and renders nothing (§2.3). CHECK SHAFT on one screen out of eleven is
+not a diagnosis to plan for - it cannot happen.
 
 ### 4.4 What the count readout is, and is not
 
@@ -252,8 +280,16 @@ a ritual.
 
 ### 4.6 `--` does not go away
 
-`--` remains correct for "this display has heard nothing since boot", which is a
-different condition from all four states above and must not be given a number.
+`--` remains correct for "frames are arriving but there is no confirmed floor",
+which is a different condition from all four states above and must not be given
+a number.
+
+A display that has heard *nothing* since boot is a third thing again, and it
+does not show `--` either: `floor_display.cpp` only calls `displayUpdate()` once
+a frame has arrived, so until then the boot splash stays on the glass. Three
+conditions, three appearances - splash for "nothing has ever arrived", `--` for
+"arriving, no floor yet", and the commissioning screens for "arriving, and the
+model and the building disagree".
 
 ### 4.7 Rendering the basement label
 
@@ -320,9 +356,13 @@ envs: A and C get `FLOOR_LABEL_COUNT=11` and `FLOOR_LABELS="B,1,...,10"`, B keep
 ### 5.4 `src/floor_display.cpp`
 
 - `applyStats()` already unpacks `nFloors` and `flags` and throws both away
-  after a `Serial.printf`. Capture `s.nFloors` and
-  `elevStatsNvsRestored(&s)` into statics.
-- `buildUiState()` populates the new fields.
+  after a `Serial.printf`. Capture `s.nFloors`, `elevStatsNvsRestored(&s)` and
+  `elevStatsModelReady(&s)` into statics.
+- `buildUiState()` populates the new fields. Note that `modelReady` for the
+  commissioning decision is the STATS copy, while `positionValid` keeps using
+  the STATE copy - see §4.3 for why crossing the two breaks a parked shaft.
+  These are two different questions: "may this node animate right now" follows
+  STATE, "what did the car last say about its model" follows the heartbeat.
 - The startup banner names the elevator this build is for.
 
 ### 5.5 `src/elevator_tx.cpp`
@@ -373,15 +413,41 @@ The table the documentation must carry, one mechanism per row:
 
 ### 7.2 Bench coexistence test
 
-The decisive one, because it is a harsher test than the building can produce.
-All three transmitters and all three bridges powered on one table, within a
-metre of each other, at full 22 dBm - the worst near-far geometry that exists.
+All three transmitters and all three bridges powered at once, on a bench, with
+laptops attached.
+
+**Keep every board at least 1 m from every other board.** This is a minimum, not
+a maximum, and it is a hardware limit rather than a matter of taste. The
+SX1262's absolute maximum RF input is about +10 dBm (`HARDWARE.md` §3.1) and the
+transmitters run at 22 dBm, so in free space at 915 MHz:
+
+```
+  0.10 m  ->  +10.3 dBm    over the absolute maximum
+  0.25 m  ->   +2.4 dBm
+  0.50 m  ->   -3.6 dBm
+  1.00 m  ->   -9.7 dBm    about 20 dB of margin
+```
+
+The crossover is 10.4 cm. Six boards "on one table" is exactly how two of them
+end up 5 cm apart, and the damage is to a receiver front end rather than to the
+test.
+
+**What this proves, and what it does not.** Equidistant boards are a near-far
+ratio of zero, so this is not the worst case - it is the case where every
+foreign signal arrives at the *same* power as the wanted one. That is a real
+stress on adjacent-channel rejection, and far harsher than the typical building
+geometry where a foreign car is much further away than your own. But the genuine
+worst case - a foreign car a metre from your bridge while your own car is ten
+floors up the shaft - is not reproducible on a bench, and this test should not
+be described as though it were.
 
 Pass conditions:
 
 - each bridge's `publishCount` advances at its own car's cadence
 - each bridge's `dropForeignTxId` stays at 0
-- each bridge's `foreignOrigins` stays at 0
+- **no** `foreignOrigins` field appears in any bridge's summary line -
+  `printSummary()` prints that counter only when it is non-zero, so the pass
+  condition is its absence, not a printed zero
 - no bridge's loss statistics degrade when the other two are powered versus when
   they are not
 

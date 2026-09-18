@@ -1,5 +1,6 @@
 //
-// The per-floor screen. Ten identical units, one on every landing.
+// The per-floor screen. One identical unit on every landing of one shaft -
+// ten in elevator B, eleven each in A and C, which also serve a basement.
 //
 // This node is a renderer and a relay, and deliberately nothing else. It never
 // runs the floor algorithm and it never infers a floor from anything but a
@@ -49,9 +50,11 @@
 #define UI_REFRESH_MS 250
 #endif
 
-// Dedup is reported as a delta rather than per frame. With ten displays each
-// sending MESH_REPEATS copies, one STATE can produce twenty-odd duplicates at a
-// well-connected node, and a line each would bury the frames that matter.
+// Dedup is reported as a delta rather than per frame. With the ten or eleven
+// displays of one shaft each sending MESH_REPEATS copies, one STATE can produce
+// twenty-odd duplicates at a well-connected node, and a line each would bury the
+// frames that matter. The three shafts are on separate channels, so this count
+// is always one shaft's own traffic.
 #ifndef DEDUP_REPORT_MIN_MS
 #define DEDUP_REPORT_MIN_MS 1000
 #endif
@@ -90,13 +93,26 @@ static uint8_t  gDirection  = ELEV_DIR_IDLE;
 static float    gBatteryVolts = 0.0f;
 static float    gPitchM       = 0.0f;
 
-// The two STATS fields the commissioning readout is built from (spec 4.3).
-// Both were unpacked and thrown away before this change. gModelFloorsValid is
-// what keeps the readout quiet for the first minute after boot, when there has
-// been no heartbeat to compare FLOOR_LABEL_COUNT against.
+// The three STATS fields the commissioning readout is built from (spec 4.3).
+// All three were unpacked and thrown away before this change. gModelFloorsValid
+// is what keeps the readout quiet for the first minute after boot, when there
+// has been no heartbeat to compare FLOOR_LABEL_COUNT against.
+//
+// All three come from STATS, and they have to. The obvious alternative for
+// model-ready is gModelReady, which STATE carries - but STATE only runs while
+// the car moves and for STATE_HOLD_AFTER_STOP_MS after it stops, so on a
+// display that booted into a parked shaft it is simply false, meaning "no STATE
+// has arrived here yet" rather than anything about the car's model. Feeding
+// that into the truth table alongside an nFloors that DID arrive reads as
+// "the model is not ready but the span is right" - which is ANCHORING, so a
+// healthy parked shaft would tell every screen to ride to both ends after any
+// display reset. Taking all three from one packet keeps them one coherent
+// snapshot of what the car said, instead of a mix of what it said and what
+// this node happens to have heard.
 static uint8_t  gModelFloors      = 0;
 static bool     gModelFloorsValid = false;
 static bool     gNvsRestored      = false;
+static bool     gStatsModelReady  = false;
 
 // The odometer, as a fixed baseline from the last heartbeat plus whatever this
 // node has watched happen since. See accrueDistance().
@@ -122,8 +138,9 @@ static uint32_t gBadFrames     = 0;  // right envelope, unusable contents
 // would be a second copy of the wire format to keep in step, and the failure
 // mode of the two drifting apart is a screen that is confidently wrong.
 //
-// txId and seq are restored as zero. There is one transmitter, and neither
-// field means anything to a display.
+// txId and seq are restored as zero. The bridge has already checked txId against
+// its own elevator and stripped it (spec 3), and a display only ever hears its
+// own shaft's bridge, so neither field means anything by the time it gets here.
 static bool rebuildLoraPacket(const MeshFrame &f, uint8_t *out, size_t cap,
                               size_t *outLen) {
   const size_t want = elevPacketLength(f.type);
@@ -207,6 +224,7 @@ static void applyStats(const uint8_t *pkt, size_t len) {
   gModelFloors      = s.nFloors;
   gModelFloorsValid = true;
   gNvsRestored      = elevStatsNvsRestored(&s);
+  gStatsModelReady  = elevStatsModelReady(&s);
 
   // The transmitter's figure lands as-is and whatever this node extrapolated
   // since the last heartbeat is discarded, not added to it.
@@ -290,11 +308,14 @@ static DisplayUiState buildUiState(uint32_t now) {
   s.direction     = gDirection;
 
   // modelReady is carried in its own field rather than read back out of
-  // positionValid: the renderer treats positionValid as permission to animate
-  // and is free to change that rule, while this one feeds spec 4.3's truth
-  // table, where the difference between "not ready" and "ready" is the
-  // difference between LEARNING and CHECK SHAFT.
-  s.modelReady       = gModelReady;
+  // positionValid, and it is the STATS copy rather than the STATE one.
+  // positionValid is permission to animate and is answering "may this node
+  // sweep the digits right now", so it follows STATE. This field answers "what
+  // did the car last say about its model", which has to stay true through a
+  // parked shaft, so it follows the 60 s heartbeat instead. See the note on
+  // gStatsModelReady - crossing the two puts a healthy parked shaft into
+  // ANCHORING after any display reset.
+  s.modelReady       = gStatsModelReady;
   s.modelFloors      = gModelFloors;
   s.modelFloorsValid = gModelFloorsValid;
   s.nvsRestored      = gNvsRestored;
