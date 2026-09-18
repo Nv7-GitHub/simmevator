@@ -50,8 +50,18 @@
 // behind each one is written down. These fallbacks only keep the file
 // compilable on its own.
 // ---------------------------------------------------------------------------
+// LORA_FREQUENCY is the one radio setting that is NOT shared, and so it is the
+// one with no fallback. 913.0 / 915.0 / 917.0 MHz come from [elev_a] /
+// [elev_b] / [elev_c], one section per shaft (spec 2.1).
+//
+// A default here would read as harmless and would not be. Every unset build
+// would quietly become elevator B, so the three cars would land back on one
+// frequency - the pure-ALOHA case that loses about one STATE packet in three -
+// and a bridge built without an elevator would sit 2 MHz away from its own car
+// and simply never hear it. Neither failure shows up at compile time, and the
+// second one looks exactly like a dead radio. Fail here instead.
 #ifndef LORA_FREQUENCY
-#define LORA_FREQUENCY 915.0f   // MHz
+#error "LORA_FREQUENCY is not set - build one of the per-elevator environments (elevator_tx_a/_b/_c, bridge_rx_a/_b/_c), which pull it from [elev_a]/[elev_b]/[elev_c] in platformio.ini (spec 5.1)"
 #endif
 #ifndef LORA_BANDWIDTH
 #define LORA_BANDWIDTH 125.0f   // kHz

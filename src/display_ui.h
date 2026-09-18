@@ -98,11 +98,31 @@
 // table is the reason a basement ("B,1,2,...") or a skipped floor
 // ("1,2,3,5,6" in a building with no 4) is a build flag rather than a code
 // change. The renderer never formats a floor index as a number directly.
+// There is deliberately no firmware fallback. The label table is what turns a
+// floor index into a name, and it is also the only thing in the system that
+// knows how many landings this shaft has - displayCommissionState() compares
+// the car's learned nFloors against FLOOR_LABEL_COUNT, and that comparison is
+// the entire defence against spec 4.1's trap. A default of ten would hand a
+// basement shaft B's table, so every screen in it would read one floor low and
+// the check built to catch exactly that would agree with the mistake.
+//
+// On the host there is no shaft. env:native defines no elevator, and
+// test_commissioning passes the label count in as an argument rather than
+// reading the macro, so a placeholder here is not standing in for a real
+// building - it only keeps the header self-contained.
 #ifndef FLOOR_LABELS
-#define FLOOR_LABELS "1,2,3,4,5,6,7,8,9,10"
+#ifdef DISPLAY_UI_HAVE_PANEL
+#error "FLOOR_LABELS is not set - build floor_display_a/_b/_c, which pull the label table from [elev_a]/[elev_b]/[elev_c] in platformio.ini (spec 5.1)"
+#else
+#define FLOOR_LABELS "1,2,3,4,5,6,7,8,9,10"   // host placeholder, not a building
+#endif
 #endif
 #ifndef FLOOR_LABEL_COUNT
-#define FLOOR_LABEL_COUNT 10
+#ifdef DISPLAY_UI_HAVE_PANEL
+#error "FLOOR_LABEL_COUNT is not set - see FLOOR_LABELS above"
+#else
+#define FLOOR_LABEL_COUNT 10                  // host placeholder, not a building
+#endif
 #endif
 
 // Hard ceiling on the parsed table. The algorithm's own ladder is a 64-entry

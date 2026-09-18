@@ -57,9 +57,18 @@
 // ---------------------------------------------------------------------------
 
 // Nothing associates with an AP, so this is simply the channel the raw frames
-// go out on. Every node must agree or they are deaf to each other.
+// go out on. Every node in a shaft must agree or they are deaf to each other.
+//
+// This is the one mesh setting that is per-shaft - 6 for A, 1 for B, 11 for C -
+// and so it is the one with no fallback. A default would make every unset build
+// elevator B, which fails in two directions at once: a display that hears
+// nothing because its bridge is on another channel, and two shafts sharing
+// channel 1, where the bridges collide in the origSeq space and each drops a
+// random share of the other's frames as duplicates forever (spec 2.2). The
+// first looks like a dead board and the second looks like flaky range. Fail
+// here instead.
 #ifndef MESH_CHANNEL
-#define MESH_CHANNEL 1
+#error "MESH_CHANNEL is not set - build one of the per-elevator environments (bridge_rx_a/_b/_c, floor_display_a/_b/_c), which pull it from [elev_a]/[elev_b]/[elev_c] in platformio.ini (spec 5.1)"
 #endif
 
 // Maximum transmit power in quarter-dBm. esp_wifi_set_max_tx_power accepts
