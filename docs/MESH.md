@@ -1,11 +1,18 @@
 # The ESP-NOW flood
 
-Eleven ESP32s - the bridge on floor 5 and one display on each of floors 1
-through 10 - share one broadcast address and one rule: *if you have not seen
-this `origSeq` before, wait a random moment and send it on once*. There is no
-routing table, no pairing, no per-floor configuration and no MAC address
-written down anywhere. A display is interchangeable with a spare straight out
-of the box.
+Eleven ESP32s in elevator B - the bridge on floor 5 and one display on each of
+floors 1 through 10 - share one broadcast address and one rule: *if you have
+not seen this `origSeq` before, wait a random moment and send it on once*.
+There is no routing table, no pairing, no per-floor configuration and no MAC
+address written down anywhere. A display is interchangeable with a spare
+straight out of the box.
+
+Elevators A and C run that same mesh with twelve nodes, the extra one being the
+basement display. The three shafts are three separate floods on three separate
+channels, and no node ever hears another shaft's traffic - that is the central
+decision of the three-elevator deployment and it has its own section, §13.
+Everything between here and there describes one shaft, and says so wherever the
+node count is part of the arithmetic.
 
 This file covers why it is built that way, which numbers are safe to turn, and
 how to work out what is wrong while standing in the stairwell with a laptop.
@@ -84,9 +91,10 @@ Not nothing, and it is worth being precise about where the cost lands.
 
 *Transmissions:* roughly a wash. A flood is 11 transmissions per frame - the
 bridge plus ten displays, each relaying once. A chain covering 5 -> 10 and
-5 -> 1 is 8, since floors 1 and 10 are endpoints and relay to nobody. Flooding
-a line is not the blowup it is in a dense mesh, because a line has no fan-out
-to amplify.
+5 -> 1 is 8, since floors 1 and 10 are endpoints and relay to nobody. In A and
+C, with a basement display on the bottom of the chain, the same two counts are
+12 and 9. Flooding a line is not the blowup it is in a dense mesh, because a
+line has no fan-out to amplify.
 
 *Receptions:* this is where it lands. Each node hears the same frame from every
 neighbour in range, times `MESH_REPEATS`, and throws all but the first away.
@@ -99,7 +107,8 @@ and not 3, and it is the reason nothing is done in the receive callback
 *Channel time:* 11 nodes x 3 repeats = 33 transmissions per STATE frame, one
 STATE every 2 s while the car moves. `espnow_mesh.h` puts a 42-byte frame at
 about 1.3 ms of payload time at the LR rate, which makes the floor of the
-estimate ~43 ms per 2 s, around 2% occupancy. That is a floor, not a
+estimate ~43 ms per 2 s, around 2% occupancy. A and C carry one more node:
+12 x 3 = 36 transmissions, ~47 ms, around 2.3%. That is a floor, not a
 measurement: it ignores the 802.11 preamble, the MAC header and CSMA backoff,
 all of which are substantial at 250 kbps. Nobody has put a spectrum analyser on
 this.
@@ -122,18 +131,29 @@ assuming.
 
 ## 3. The rules, and where each number lives
 
-All of these are in `[mesh_base]` in `platformio.ini`, which both `bridge_rx`
-and `floor_display` inherit - one edit, but eleven reflashes.
+All but one of these are in `[mesh_base]` in `platformio.ini`, which both
+`bridge_rx` and `floor_display` inherit in all three elevators - one edit, but
+thirty-five reflashes.
+
+The exception is `MESH_CHANNEL`, which is now a per-elevator value and lives in
+`[elev_a]`, `[elev_b]` and `[elev_c]` instead. `[mesh_base]` does not define it
+at all, so it is defined in exactly one place per build and a firmware built
+with no elevator selected fails to compile rather than quietly inheriting
+elevator B's channel.
 
 | flag | value | what it does |
 |---|---|---|
-| `MESH_CHANNEL` | 1 | the channel the raw frames go out on. Nothing associates with an AP |
+| `MESH_CHANNEL` | A 6, B 1, C 11 | the channel the raw frames go out on, per elevator (§13). Nothing associates with an AP |
 | `MESH_TX_POWER_QDBM` | 84 | quarter-dBm. `esp_wifi_set_max_tx_power` takes [8, 84] and quantises; 84 lands on the 80 (20 dBm) ceiling |
 | `MESH_HOP_LIMIT` | 8 | §7 |
 | `MESH_REPEATS` | 3 | §8 |
 | `MESH_RELAY_JITTER_MIN_MS` | 5 | §5 |
 | `MESH_RELAY_JITTER_MAX_MS` | 40 | §5 |
 | `MESH_DEDUP_RING` | 32 | §4 |
+
+Every other value in that table is identical on all thirty-five boards in the
+building. The channel is the only thing that distinguishes one shaft's mesh
+from another's.
 
 And these are in the headers, not the build:
 
@@ -202,15 +222,16 @@ against a late duplicate being relayed a second time. In the other direction it
 is short enough to stay a linear scan over one cache line's worth of u16, which
 is what lets the scan sit in the hot path without anyone thinking about it. The
 only thing that would make 32 too small is the bridge minting very much faster
-than it does.
+than it does - or a second bridge minting into the same ring, which is §13.1
+and is a correctness problem rather than a sizing one.
 
 ---
 
 ## 5. Relay jitter
 
-Ten displays hear the same frame within microseconds of each other. If each
-relays as soon as it has decoded it, all ten transmit into the same air at the
-same instant. CSMA does not save you: each radio measures a channel that was
+Ten displays - eleven in A and C - hear the same frame within microseconds of
+each other. If each relays as soon as it has decoded it, all ten transmit into
+the same air at the same instant. CSMA does not save you: each radio measures a channel that was
 idle a moment ago, so they do not back off from *each other*, they all go at
 once. Every listener gets ten overlapping frames and decodes none of them. The
 flood dies one hop from the bridge, which is exactly where it was needed.
@@ -219,7 +240,8 @@ flood dies one hop from the bridge, which is exactly where it was needed.
 before a relay goes out. 35 ms of spread against the ~1.3 ms a frame occupies
 means the ten transmits queue rather than collide. This is not a tuning
 refinement that makes the mesh better. It is the difference between a mesh and
-a pile of ESP32s shouting.
+a pile of ESP32s shouting. §13.2 runs the same arithmetic for 35 nodes sharing
+one window, which is why the three shafts are three meshes.
 
 **Why not a fixed per-floor delay?** Floor *n* waits *n* x 4 ms. Deterministic,
 no RNG, provably collision-free, and it reads as the tidier design.
@@ -296,7 +318,8 @@ and quietly costs you the whole 7 dB.
 - **A half-deployed change makes nodes deaf in one direction.** If some boards
   have the rate set and some do not, the ones transmitting at LR are inaudible
   to the ones that are not - and possibly not vice versa. Symptoms look like a
-  range problem. Reflash all eleven or none.
+  range problem. Reflash every node in the shaft or none - eleven in B, twelve
+  in A and C.
 - **7 dB is a link budget number, not a floor count.** How many extra floors it
   buys depends on the per-floor attenuation of this particular stairwell, which
   is unmeasured. 6 dB is a factor of two in free-space range; through
@@ -314,10 +337,29 @@ Check the banner; do not assume.
 
 ## 7. Hop limit 8
 
-The bridge is on floor 5. The furthest any display sits from it is five floors
-- floor 10 above, floor 1 below - so the worst case, in the pessimistic
-assumption that each hop only ever reaches the adjacent floor, is **5 hops**.
-`MESH_HOP_LIMIT` is 8.
+In elevator B the bridge is on floor 5. Floor 10 is five landings above it and
+floor 1 is four below, so the worst case, in the pessimistic assumption that
+each hop only ever reaches the adjacent floor, is **5 hops**. `MESH_HOP_LIMIT`
+is 8.
+
+**Eleven landings do not change that, and it is worth showing the arithmetic
+rather than asserting it.** A and C add a basement below floor 1 and keep the
+bridge mid-shaft on floor 5. The new landing extends the shaft in the direction
+that had a hop to spare: 5 -> 4 -> 3 -> 2 -> 1 -> B is five hops, exactly
+matching the five up to floor 10. The worst case is 5 hops in all three shafts
+and the three hops of slack survive intact. It is the asymmetry of the original
+placement that pays for the basement - a bridge one floor lower would put the
+basement four hops away and floor 10 six, and the slack would be 2.
+
+What the basement does change is the quality of the pessimism, not the count.
+A basement is below grade and under the lobby slab, and floor-to-floor
+attenuation there is not the same as between two upper floors. If nothing above
+floor 1 can cross that slab, the basement display is reachable by exactly one
+path in a design whose argument is that there are several (§2), and losing the
+floor 1 display takes it dark. That is a range fact to measure (§10.6), and not
+one a larger hop limit reaches: `dropHopExhausted` climbing on a basement
+display would mean the opposite, that frames are arriving there by some path far
+longer than the shaft.
 
 The frame is minted at 8 and each relay decrements before sending. A copy
 arriving with 1 hop left is delivered to that node and goes no further:
@@ -335,13 +377,13 @@ The three hops of slack are for paths that are not straight lines:
 - Range that turns out worse than assumed, so the "each hop is one floor"
   pessimism is not pessimistic enough.
 
-There is no reason to raise it. A frame that has taken 8 hops in a 10-floor
-building has gone somewhere strange, and letting it go further only adds
-channel time. There is also little reason to lower it: `hop` costs a byte
+There is no reason to raise it. A frame that has taken 8 hops in a shaft of ten
+or eleven landings has gone somewhere strange, and letting it go further only
+adds channel time. There is also little reason to lower it: `hop` costs a byte
 whatever its value, and the flood is bounded by the dedup ring anyway - every
-node relays each `origSeq` exactly once, so the total transmission count is 11
-regardless of the hop limit. The hop limit is a backstop against a frame
-circulating, not the thing that bounds the flood.
+node relays each `origSeq` exactly once, so the total transmission count is 11,
+or 12 in A and C, regardless of the hop limit. The hop limit is a backstop
+against a frame circulating, not the thing that bounds the flood.
 
 **One consequence worth knowing.** A node relays the *first* copy it hears and
 ignores the rest, including a copy that arrives later with more hops remaining.
@@ -370,28 +412,32 @@ displayed rather than hidden.
 already has the three repeats in it; at one send each it would be around 0.7%.
 Everything past the first copy to arrive is a dedup hit at every receiver,
 costing a receive-ring slot and a 32-entry scan. It also raises the collision
-probability for everyone else in the building on channel 1, which is the trade
-being made in §11.
+probability for everyone else on this shaft's channel, which is the trade being
+made in §11.
 
 **Why not more.** Repeats are the cheapest knob to reach for when delivery is
 short, and also the one most likely to make things worse - past some point you
-are colliding with your own retransmissions and with the other ten nodes' fresh
-transmissions. If 3 is not enough, the problem is almost certainly range,
-antenna placement or channel congestion, and those are worth ruling out first.
+are colliding with your own retransmissions and with the fresh transmissions of
+every other node in the shaft. If 3 is not enough, the problem is almost
+certainly range, antenna placement or channel congestion, and those are worth
+ruling out first.
 
 ---
 
 ## 9. Tuning, in the order worth trying
 
-Nothing here changes without reflashing all eleven boards. `[mesh_base]` is
-inherited by both `bridge_rx` and `floor_display`, so it is one edit and
-eleven `pio run -t upload`s. A node flashed with a different `MESH_CHANNEL` is
-completely deaf to the rest and reports nothing unusual about itself.
+Nothing here changes without reflashing every board in the shaft - eleven in B,
+twelve in A and C. `[mesh_base]` is inherited by `bridge_rx` and
+`floor_display` in all three elevators, so an edit there is one line and
+thirty-five `pio run -t upload`s. `MESH_CHANNEL` is the one row below that can
+be changed for a single shaft (§11). A node flashed with a different
+`MESH_CHANNEL` than the rest of its shaft is completely deaf to them and
+reports nothing unusual about itself.
 
 | if | try | cost |
 |---|---|---|
 | one display marginal | move the board; rotate it; get it off the metal doorframe | free |
-| channel 1 is busy (§11) | `MESH_CHANNEL` 1 -> 6 or 11 | eleven reflashes, no runtime cost |
+| this shaft's channel is busy (§11) | move this shaft's `MESH_CHANNEL`; with 1, 6 and 11 all in use that means swapping with another shaft | one or two shafts reflashed, no runtime cost |
 | delivery short everywhere | `MESH_REPEATS` 3 -> 5 | +67% channel time, more self-collision |
 | relay collisions suspected | `MESH_RELAY_JITTER_MAX_MS` 40 -> 60 | +20 ms latency per hop |
 | mint rate rises a lot | `MESH_DEDUP_RING` 32 -> 64 | longer scan, still trivial |
@@ -521,7 +567,9 @@ shaft.
 things, in order of likelihood:
 
 1. The bridge was flashed with a different `MESH_CHANNEL` than the displays, or
-   vice versa. Check the boot banner on both.
+   vice versa. Check the boot banner on both - it names the elevator, the
+   frequency and the channel the build is for, and with three elevators the
+   usual form of this mistake is a board built for the wrong one (§13.3).
 2. The LR rate did not get set on the bridge - see §6. Symptom: the bridge
    transmits, the displays are on the right channel, and nobody hears anything.
 3. `meshBringUp()` failed. It halts with an explanation on Serial rather than
@@ -546,9 +594,9 @@ console silent, check the baud and the cable.
 
 *`heard` = 0.* It is receiving nothing at all. Three causes:
 
-- Wrong channel. It was flashed from a tree with a different `MESH_CHANNEL`, or
-  it was never reflashed when the channel was changed. Check its banner against
-  a working display's.
+- Wrong channel. It was built for another elevator (§13.3), or flashed from a
+  tree with a different `MESH_CHANNEL`, or never reflashed when the channel was
+  changed. Check its banner against a working display's.
 - Its LR rate is not set and the others' is, or the reverse - the half-deployed
   case in §6. Same symptom as wrong channel.
 - **Genuinely out of range of both neighbours.** This is the one thing on the
@@ -636,14 +684,47 @@ you it has nothing, not a signal of -0 dBm.
 The result tells you whether "floor 5 can still reach floor 7" is true in this
 building, which is the entire premise of §2.
 
+### 10.7 The foreign-origin warning, and what it is good for
+
+The bridge registers a mesh receive handler that does nothing but complain.
+Every frame it mints comes back to it from its own displays and is swallowed by
+its dedup ring, so anything that survives to the handler carries an `origSeq`
+this bridge did not mint. `onMeshFrame()` in `bridge_rx.cpp` counts it in
+`foreignOrigins` and prints the `origSeq`, the type, the source MAC, the RSSI
+and the channel, with the reason attached: *a second origin on channel N would
+collide in the origSeq space*. A non-zero `foreignOrigins` also appears in the
+bridge's periodic summary line.
+
+That guard was written for the single-elevator system, where the only thing it
+could plausibly catch was a forgotten bench node. **With three bridges in one
+building it is the detector for the one configuration mistake that §13.1 says
+is otherwise invisible: two shafts sharing a channel.** Nothing else in the
+system reports that condition. The displays do not - from a display's side the
+symptom is `deduped` rising and `accepted` falling, and §10.3 documents a high
+`deduped` as the flood working properly.
+
+It is bridge-local, not part of `MeshCounters`, so it is read on the bridge
+console and nowhere else.
+
+**And that is the limit of it: `foreignOrigins` is a bench instrument, not a
+field instrument.** The bridge is a wall-powered box mid-shaft; reading its
+console means standing in front of it with a laptop, which is not a thing that
+happens during normal operation. It earns its place on the bench, with all
+three bridges powered within a metre of each other, where "`foreignOrigins`
+stays at 0 on all three" is a pass condition that the building itself could
+never produce as sharply. In the field the argument that the shafts do not
+interfere is the channel separation itself, and the instruments that are
+actually visible are the displays.
+
 ---
 
-## 11. Interference on channel 1
+## 11. Interference, per shaft
 
 Channel 1 is 2401-2423 MHz and it is the most popular channel in most
-buildings, including this one. Nothing here associates with an access point, so
-the frames go out regardless of what else is on the channel - but they collide
-with it.
+buildings, including this one. That is elevator B's channel; A is on 6 and C on
+11 (§13), which are usually less crowded and neither of which is empty.
+Nothing here associates with an access point, so the frames go out regardless
+of what else is on the channel - but they collide with it.
 
 ### Telling interference apart from everything else
 
@@ -670,21 +751,49 @@ You cannot see LR traffic with any conventional tool (§6), but you can see
 2. Count access points and signal strength on channels 1, 6 and 11.
 3. Do it at the worst hour, not a convenient one.
 
-If channel 1 is carrying several strong APs and 6 or 11 is comparatively empty,
-the change is worth making.
+**Do this in each shaft separately.** Congestion is a property of the stairwell
+rather than of the building - the APs that matter are the ones within a few
+floors of that shaft, and three shafts far enough apart to be given separate
+meshes are far enough apart to have different neighbours. A survey taken in
+shaft B says nothing about shaft C.
+
+If this shaft's channel is carrying several strong APs and another of the three
+is comparatively empty there, the change is worth making.
 
 ### Making the change
 
-`-DMESH_CHANNEL=1` in `[mesh_base]` -> 6 or 11. Those are the three
-non-overlapping 2.4 GHz channels; picking 3 or 9 buys partial overlap with two
-neighbours instead of full overlap with one, which is worse.
+Because `MESH_CHANNEL` is a per-elevator build flag (§3), **any one shaft can
+move channel on its own** - a degree of freedom the single-elevator system did
+not have. Change the value in that elevator's section of `platformio.ini` and
+reflash that shaft's boards, eleven in B or twelve in A and C. The other two
+shafts are untouched and never notice.
 
-Then reflash **all eleven boards**. A node left on the old channel is
-completely deaf and completely silent about it - its `heard` sits at 0 and it
-looks exactly like a range problem. There is no channel negotiation, no scan,
-and no fallback; agreement on the channel is an assumption baked into the
-design, and it is the first thing to check whenever a node has gone
-inexplicably quiet.
+**The one rule is that two shafts within earshot must not share a channel.**
+Sharing puts two bridges' `origSeq` into one dedup space, which is §13.1, and
+that failure is invisible from the corridor. `foreignOrigins` on the bridge
+(§10.7) is what catches it, on the bench.
+
+That rule makes a move a swap rather than a migration, because 1, 6 and 11 are
+the only three non-overlapping 2.4 GHz channels and all three are in use. If
+shaft A's stairwell is thick with APs on 6 while 11 is clear there, the change
+is A and C trading channels - and C's stairwell should be surveyed on 6 first,
+because that trade solves A's problem by handing C whatever is on 6 near shaft
+C.
+Picking 3 or 9 to escape into instead buys partial overlap with two neighbours
+in place of full overlap with one, which is worse, and it does it to a
+neighbouring shaft as well as to the building's access points.
+
+If all three channels are busy in one stairwell, no channel fixes it and the
+answer is the first row of §9 - the mount, the orientation, the metal doorframe
+- not a build flag.
+
+A node left on the old channel is completely deaf and completely silent about
+it - its `heard` sits at 0 and it looks exactly like a range problem. There is
+no channel negotiation, no scan, and no fallback; agreement on the channel is
+an assumption baked into the design, and it is the first thing to check
+whenever a node has gone inexplicably quiet. With three channels in the
+building there is now a second thing to check alongside it: that the node is on
+its own shaft's channel and not a neighbour's (§13.3).
 
 ---
 
@@ -709,7 +818,155 @@ a fact.
   an optimum. Whether 2 would do or 5 would help is unknown.
 - **Actual mesh latency.** The 110-200 ms in §5 is jitter arithmetic over an
   assumed 5-hop path, with no airtime, no CSMA and no processing time in it.
+- **Whether the three shafts can hear each other at all.** §13 assumes they can
+  and separates them so that the answer does not matter. Nobody has measured
+  cross-shaft audibility in this building, and the bench test that backs the
+  separation deliberately reproduces a harsher case than the building can - all
+  three bridges within a metre of each other at full power.
 
 The LoRa leg, by contrast, has real numbers behind it: 5.21% batch loss over
 3 h at SF10/BW125/14 dBm, 49 dropouts, worst case 40 s, from ALGORITHM.md §9.
 That link was measured in this shaft. This one has not been.
+
+---
+
+## 13. Three meshes in one building
+
+Three shafts, three bridges, 32 displays. Each shaft floods on its own channel
+and the three never hear each other:
+
+| | elevator A | elevator B | elevator C |
+|---|---|---|---|
+| `MESH_CHANNEL` | 6 | 1 | 11 |
+| landings | B, 1-10 | 1-10 | B, 1-10 |
+| nodes on the channel | 12 | 11 | 12 |
+
+1, 6 and 11 are the three non-overlapping 2.4 GHz channels (§11), so the three
+floods do not merely ignore each other's frames, they stay out of each other's
+spectrum. Everything else in this file is identical on all thirty-five boards.
+
+The question worth answering here is not why this works. It is why the obvious
+alternative does not - one building-wide flood carrying elevator-tagged frames,
+on one channel, with `ff:ff:ff:ff:ff:ff` already meaning "everybody". Two of the
+numbers this document spends the most time on are the reason, and both of them
+fail in the way this system finds hardest to notice: quietly, for hours, with
+every counter looking healthy.
+
+### 13.1 One flood cannot carry three origins
+
+§3 disposes of this in a sentence - only `MESH_ROLE_ORIGIN` may mint `origSeq`,
+"because a second minter in the same u16 space produces collisions that the
+dedup ring reads as duplicates and swallows without a word". Three bridges on
+one channel is that sentence, twice over. §4 is why it cannot be repaired at the
+receiver.
+
+The ring is **membership, never comparison** (§4). `meshDedupSeenOrInsert()`
+asks one question - is this u16 among the last 32 I accepted - and the ring
+stores nothing but the value, because in a single-origin mesh there is nothing
+else to store. So bridge A's frame 4113 and bridge C's frame 4113 are not two
+frames that happen to share a number. To every display on that channel they are
+*the same frame*, and the second to arrive is dropped as a duplicate. The
+equality test that makes the u16 wrap a non-event (§4) is exactly what makes a
+second minter undetectable: the ring cannot tell a repeat from a coincidence,
+and it was never asked to.
+
+Work out how often the coincidence happens and it turns out not to be a
+coincidence at all. The ring holds the last 32 values a node accepted, from any
+origin, so with three floods interleaved it spans about eleven frames from each
+- roughly 22 s at the 2 s STATE cadence rather than the minute §4 assumes. A
+value C mints is eaten if A minted the same value inside that window, which is
+to say if A's counter is ahead of C's by fewer than about eleven. And the three
+bridges mint at the same nominal rate by construction, one STATE every 2 s while
+their car moves, so their counters do not sweep past each other and move on.
+They separate only at the difference between the cars' active duty cycles, and
+that is slow: one percentage point of difference at the 0.5 frames per second
+cadence is `0.01 x 0.5 x 3600 = 18` frames an hour. Two counters eleven apart
+can sit eleven apart all afternoon.
+
+So the failure is not an occasional lost frame. It is: **whenever two of the
+three counters are within about eleven of each other, every single frame from
+the trailing bridge is discarded by every display in the building, and it stays
+that way for as long as the drift keeps them there - hours.** Then it clears on
+its own, and comes back when they next converge, and since both counters wrap at
+65535 they converge again and again.
+
+Now read that from the corridor. One shaft's displays go stale together for an
+afternoon while the other two shafts are fine. The bridge's `published` is
+climbing normally. On the displays, `heard` is normal, `accepted` has collapsed
+and `deduped` has risen to take up the slack - and §10.3 says in as many words
+that a high `deduped` is the flood working properly. The one counter that moves
+is the one the debugging section tells you not to worry about.
+
+Fixing it inside the flood means an origin field in the envelope, which means a
+`MESH_VERSION` bump and every node in the building reflashed to a new frame
+format. The channel plan costs one build flag.
+
+### 13.2 One flood cannot fit in the jitter window
+
+§5 is the other number. The relay jitter is a uniform 5-40 ms draw: 35 ms of
+spread against the ~1.3 ms a 42-byte frame occupies at the LR rate, which is
+what turns ten simultaneous relays into ten that queue. It is "the difference
+between a mesh and a pile of ESP32s shouting", not a refinement.
+
+Count what a building-wide flood puts into that same window. One frame reaching
+every node, each node relaying it once, `MESH_REPEATS` copies each:
+
+```
+32 displays x 3 repeats        =  96 transmissions
+96 x 1.3 ms                    = 125 ms of payload time
+125 ms into a 35 ms window     = ~3.5x oversubscribed
+```
+
+plus the minting bridge's own three sends and the other two bridges relaying,
+which is nine more. Against one shaft today:
+
+```
+11 nodes x 3 repeats           =  33 transmissions
+33 x 1.3 ms                    =  43 ms into the same 35 ms window = ~1.2x
+```
+
+Today's window is therefore already about full, and full is fine: the jitter
+spreads the *start* times, CSMA serialises the handful that still overlap, and a
+node that has to wait is waiting behind one or two others. At 3.5x the queue
+cannot drain inside the window at all. Transmissions land hundreds of
+milliseconds after the instant that was drawn for them, which means the draw no
+longer determines when anything goes out, which means the jitter has stopped
+spreading anything. That is the all-at-once condition §5 exists to prevent,
+re-created by the very frames the jitter was protecting. And unlike two displays
+that happen to draw the same millisecond, it does not clear on the next frame:
+every frame produces the same pile-up.
+
+Both figures are floors, in the sense §12 gives that word - payload time only,
+no 802.11 preamble, no MAC header, no backoff. The true numbers are larger,
+which makes the 3.5x worse rather than better. The receive path would feel it
+too: `MESH_RX_QUEUE_DEPTH` is 12 because a node processes roughly ten copies of
+each frame (§2), and three floods on one channel triple that.
+
+### 13.3 What separation buys, and what it costs
+
+On its own channel each shaft is the single-origin, one-shaft system that every
+number above was derived for: one minter in the u16 space, ten or eleven
+displays sharing the jitter window, a dedup ring spanning a minute of one
+bridge's traffic. So nothing in §1 through §12 needs a caveat about the other
+two shafts, and the only figures that move are the node counts in A and C,
+which carry the ~2% occupancy estimate to ~2.3% (§2). Those are still
+derivations rather than measurements (§12); the point is only that three
+elevators do not make them any less true than they were for one.
+
+What is given up is cross-shaft path diversity - a display in shaft A can never
+be relayed to through shaft C. Since the whole argument for flooding is
+floor-to-floor reach inside one stairwell (§2), and the shafts are far apart,
+that is not a loss of anything that was wanted.
+
+What is added is a new way to mis-flash a board. §9's warning - a node on the
+wrong channel is deaf and silent about it - now has a second form, because a
+display built for the wrong elevator carries the wrong channel *and* the wrong
+label table. If the shafts are out of earshot it simply goes deaf: `heard` at 0,
+indistinguishable from a range problem, and the first thing to check is the boot
+banner, which names the elevator. If they are within earshot it is worse than
+deaf - it joins a neighbouring shaft's flood and shows that car's floor, on a
+screen in this shaft, plausibly. Between A and C, whose label tables are
+identical, nothing on the screen distinguishes them at all. The mitigations are
+outside this file: per-elevator board labelling and the commissioning states in
+`FLASHING.md`. From the mesh side, the instrument is §10.7, and it is a bench
+instrument.

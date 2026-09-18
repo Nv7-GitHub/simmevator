@@ -2,14 +2,30 @@
 
 An elevator tracker and floor display for Simmons Hall, MIT.
 
-A barometer rides in the elevator car and works out which floor the car is on. It
-broadcasts that over LoRa to a bridge on the fifth floor, which relays it over
-ESP-NOW to a screen on every floor. Each screen shows the floor in numbers you can
-read from down the corridor, an up/down arrow while the car is moving, the
-transmitter's battery voltage, and how far the elevator has travelled in the last
-day.
+A barometer rides in each elevator car and works out which floor the car is on. It
+broadcasts that over LoRa to a bridge in its own shaft, which relays it over
+ESP-NOW to a screen on every landing of that shaft. Each screen shows the floor in
+numbers you can read from down the corridor, an up/down arrow while the car is
+moving, the transmitter's battery voltage, and how far that elevator has travelled
+in the last day.
 
-The car node runs on a battery, unattended, for about seven weeks.
+Three shafts are covered: A, B and C. A and C serve a basement as well as floors
+1-10, so they have eleven landings each; B has ten. That is 3 transmitters, 3
+bridges and 32 displays.
+
+| | elevator A | elevator B | elevator C |
+|---|---|---|---|
+| landings | B, 1-10 | 1-10 | B, 1-10 |
+| displays | 11 | 10 | 11 |
+| LoRa frequency | 913.0 MHz | 915.0 MHz | 917.0 MHz |
+| ESP-NOW channel | 6 | 1 | 11 |
+| `txId` | `'A'` | `'B'` | `'C'` |
+
+The three systems are independent end to end. A car is heard only by its own
+bridge, a screen only ever sees its own shaft's car, and no packet crosses from one
+shaft to another.
+
+Each car node runs on a battery, unattended, for about seven weeks.
 
 ---
 
@@ -57,16 +73,19 @@ would become a correctness problem.
 ### The three devices
 
 ```
-  ELEVATOR CAR (battery)          FLOOR 5 (wall)            FLOORS 1-10 (wall)
+  ELEVATOR CAR (battery)          MID-SHAFT (wall)          EVERY LANDING (wall)
   ┌──────────────────────┐        ┌──────────────┐          ┌──────────────┐
-  │ XIAO ESP32S3         │        │ XIAO ESP32S3 │  ESP-NOW │ CYD x10      │
+  │ XIAO ESP32S3         │        │ XIAO ESP32S3 │  ESP-NOW │ CYD x10/x11  │
   │  BMP390 @ 4 Hz       │  LoRa  │ + Wio-SX1262 │ ───────► │ ILI9341      │
   │  FloorMonitor @ 1 Hz │ ─────► │              │  flood   │ relay + draw │
-  │  model in NVS        │ 915MHz │ LoRa -> mesh │          │              │
-  │  battery sense       │        │ origin node  │ ◄──────► │ peer relay   │
+  │  model in NVS        │913/915/│ LoRa -> mesh │ ch 6/1/11│              │
+  │  battery sense       │917 MHz │ origin node  │ ◄──────► │ peer relay   │
   │  Wio-SX1262          │        └──────────────┘          └──────────────┘
   └──────────────────────┘
 ```
+
+One of these per shaft, three times over. The column of radio settings is the only
+difference between them.
 
 **The transmitter** samples the barometer, runs the floor algorithm, and sends two
 kinds of packet: an 8-byte `STATE` every 2 seconds while the car is moving, and a
@@ -80,6 +99,39 @@ no state worth losing.
 bridge cannot: every screen rebroadcasts each new sequence number exactly once, up
 to eight hops. Flooding rather than a fixed 5→6→7 chain means one unplugged screen
 does not cut off everything above it.
+
+### Why the three systems do not interfere
+
+**Separate LoRa frequencies, because three cars on one frequency is pure ALOHA.**
+There is no carrier sense: a transmitter that is about to send has no idea another
+shaft's car is mid-packet. A STATE packet is 297 ms and goes out every 2 s while
+the car is active, so at the 71.2% active duty measured over an evening peak each
+car offers `0.5 x 0.712 = 0.356` packets per second. ALOHA's vulnerable window is
+two packet lengths, `2 x 0.297 = 0.594 s`, so a given packet survives two
+interferers with probability `exp(-2 x 0.356 x 0.594) = 0.656` - about one STATE
+packet in three lost, on top of the 5.21% the shaft already costs
+(`ALGORITHM.md` §9), and concentrated in exactly the evening peak when all three
+cars are busy at once. So A, B and C sit on 913.0, 915.0 and 917.0 MHz: 2 MHz of
+separation against a 125 kHz occupied bandwidth, sized for a transmitter passing
+close to another shaft's bridge rather than for the typical case. A per-elevator
+sync word would *not* fix this and must not be mistaken for a fix - it is checked
+after demodulation, so it classifies wreckage rather than preventing it.
+`docs/PROTOCOL.md` carries the full arithmetic.
+
+**Separate ESP-NOW channels, because each mesh should stay the system that was
+measured.** No display ever needs another shaft's data, so the three floods run on
+channels 6, 1 and 11 and each one remains the ten- or eleven-node, single-origin
+flood that `docs/MESH.md` measured and tuned - so every number in it stays valid as
+written. One building-wide flood instead would break
+in two ways: the per-bridge `origSeq` counters would collide, because the dedup ring
+tests sequence numbers for equality with no notion of who minted them, so bridge
+A's frame 4113 would silently swallow bridge C's; and the 5-40 ms relay jitter
+window would be swamped, since 32 displays and 3 bridges put roughly 96
+transmissions of about 1.3 ms each into a 35 ms window, some 3.5x oversubscribed,
+re-creating the exact collision the jitter exists to prevent. Channel isolation
+makes both problems not exist rather than patching them; the only thing given up is
+cross-shaft path diversity, which is worthless when the shafts are far apart.
+`docs/MESH.md` works through both.
 
 ### Why the update rate is what it is
 
@@ -116,7 +168,10 @@ charge IC. The spec lists the four unmeasured draws and what to do about them.
 `ALGORITHM.md §9` records that the actual field run — the one that measured 5.21%
 packet loss over three hours in this shaft — was at **BW125 kHz and only 14 dBm**.
 
-This project uses BW125 at 22 dBm. That is the configuration with real in-shaft
+This project uses BW125 at 22 dBm on all three shafts. The 915.0 MHz that the
+bring-up repo and the field run used is now elevator B's frequency specifically -
+A and C sit 2 MHz either side of it, and nothing else about the link differs
+between them. That is the configuration with real in-shaft
 evidence, running with 8 dB more margin than the run that produced the 5.21%
 figure, and it costs 297 ms per packet instead of 725 ms. The same section notes
 that loss barely tracks signal-to-noise (r = −0.13) — it is shadowing and
@@ -146,13 +201,28 @@ number sweeps through the intermediate floors and the arrow lights up; on arriva
 it snaps to the floor the algorithm confirmed.
 
 Battery voltage and the 24-hour distance come from the transmitter once a minute,
-so all ten screens agree. Between heartbeats each screen extrapolates the distance
-from floor changes it observes, so the number ticks in real time rather than
-jumping once a minute.
+so every screen in that shaft agrees. Between heartbeats each screen extrapolates
+the distance from floor changes it observes, so the number ticks in real time
+rather than jumping once a minute.
 
 If a screen stops hearing the mesh it dims, then greys out and turns its onboard
 LED amber — a dead link is visible from the corridor rather than silently showing
 a floor from twenty minutes ago.
+
+That is normal operation. There are three further states that appear only while a
+shaft is being commissioned or is misconfigured, all derived from fields the wire
+already carries: **LEARNING**, showing how many landings the car has spanned so far
+with `OF 11` beneath it; **ANCHORING**, asking for a ride to both ends of the shaft
+after the transmitter restored its model from NVS; and **CHECK SHAFT**, which means
+the car is confidently reporting a floor count this shaft does not have. The last
+one is the whole reason the others exist. An elevator A car commissioned over a
+period in which nobody presses B learns a span of ten landings, is internally
+consistent, sets its model ready, and would label every screen in the shaft one
+floor too low indefinitely - and it is the display, holding the only copy of how
+many landings the building has, that can catch it. A display flashed with the wrong
+shaft's label table shows the same thing. `docs/FLASHING.md` has the commissioning
+procedure. `--` is unchanged and still means only "this screen has heard nothing
+since boot".
 
 ---
 
@@ -161,6 +231,7 @@ a floor from twenty minutes ago.
 | Document | What is in it |
 |---|---|
 | [Design spec](docs/superpowers/specs/2026-09-11-simmevator-design.md) | The whole system: power budget, protocols, verification gates, parts list |
+| [Three-elevator deployment](docs/superpowers/specs/2026-09-18-three-elevator-deployment-design.md) | The per-shaft frequency and channel plan, the basement, the commissioning screens |
 | [docs/HARDWARE.md](docs/HARDWARE.md) | Wiring, the battery divider, the buck regulator, antenna placement |
 | [docs/FLASHING.md](docs/FLASHING.md) | Which firmware goes on which board, and how |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | Both wire formats, field by field |
@@ -172,14 +243,21 @@ a floor from twenty minutes ago.
 
 ## Building
 
-PlatformIO. Four environments:
+PlatformIO. Nine firmware environments - three roles across three elevators:
 
 ```bash
-pio run -e elevator_tx   -t upload    # the car node
-pio run -e bridge_rx     -t upload    # the floor-5 bridge
-pio run -e floor_display -t upload    # each of the ten screens
-pio test -e native                    # host unit tests
+pio run -e elevator_tx_b   -t upload    # shaft B's car node
+pio run -e bridge_rx_b     -t upload    # shaft B's bridge
+pio run -e floor_display_b -t upload    # each of shaft B's screens
+pio test -e native                      # host unit tests
 ```
+
+Substitute `_a` or `_c` for the other two shafts. The suffix is the whole of an
+image's identity: it carries the LoRa frequency, the ESP-NOW channel, the `txId`
+and the floor label table, so a display built `_b` and hung in shaft A labels every
+floor one too low. There is no runtime elevator selection to correct it with.
+`docs/FLASHING.md` has the which-image-on-which-board table, the board labelling,
+and the commissioning check that catches exactly that mistake.
 
 The port is verified by replaying the real 3 h capture through the actual C++
 implementation and diffing it against the Python reference sample by sample:
@@ -218,3 +296,7 @@ have been handed. The Python reference produces 357/255 on that input too.
   answer "does this need charging?", not a fuel gauge.
 - **The 24-hour window is relative to uptime**, not wall-clock — there is no RTC.
   After a reboot it reports less than a day of history and says so.
+- **A screen shows one car.** A landing served by all three shafts needs three
+  screens, one per shaft. There is no "which car arrives first" logic anywhere in
+  the system, and there cannot be without building one: each display is on its own
+  shaft's mesh channel and physically never hears the other two cars.

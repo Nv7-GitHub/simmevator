@@ -6,11 +6,11 @@ you need to decode a hex dump in a stairwell.
 There are two links and they do not carry the same bytes:
 
 ```
-  CAR (battery)                 BRIDGE, floor 5              DISPLAYS, floors 1-10
-  XIAO + SX1262                 XIAO + SX1262                CYD x10
+  CAR (battery)                 BRIDGE, floor 5              DISPLAYS, 10 or 11
+  XIAO + SX1262                 XIAO + SX1262                CYD, one per landing
         |                             |                            |
-        |  LoRa 915 MHz               |  ESP-NOW, 802.11 LR        |
-        |  SF10/BW125/CR4-8           |  channel 1, flooded        |
+        |  LoRa 913/915/917 MHz       |  ESP-NOW, 802.11 LR        |
+        |  SF10/BW125/CR4-8           |  channel 1, 6 or 11        |
         |  0xE0 STATE  8 B            |  0x5E1E envelope           |
         |  0xE1 STATS 24 B            |  15 B / 31 B on the wire   |
         +---------------------------->+--------------------------->+
@@ -18,6 +18,13 @@ There are two links and they do not carry the same bytes:
                                                             displays relay
                                                             to each other too
 ```
+
+That is one shaft. Three of them are deployed - elevators A, B and C, 32
+displays in total - and the only things that differ between them are the LoRa
+frequency, the ESP-NOW channel, the `txId` on the wire and how many landings the
+shaft has. Section 1.3 covers what happens when the three systems hear each
+other. Everything else in this file describes one shaft and reads identically on
+all three.
 
 The bridge does not re-broadcast the LoRa bytes verbatim. It strips three bytes
 (`tag`, `txId`, `seq`), puts the remaining body inside an ESP-NOW envelope with
@@ -27,17 +34,19 @@ explain why that is deliberate.
 
 **Source of truth.** Every offset, mask and constant below is taken from
 `src/elev_packet.h`, `src/mesh_packet.h` and `src/crc16.h`. Where the code and
-the design spec's section 4 disagree, **the code is right** - the spec is the
-older document. The disagreements found are small and are listed in section 8;
-none of them touch a field offset.
+the 2026-09-11 design spec's section 4 disagree, **the code is right** - that
+spec is the older document. The disagreements found are small and are listed in
+section 8; none of them touch a field offset. The three-elevator deployment spec
+is a later, separate document that governs different things, and section 8 says
+which.
 
 ---
 
 ## 1. The LoRa radio parameters
 
-| parameter | value | build flag (`[lora_base]`) |
+| parameter | value | build flag (`[lora_base]` unless noted) |
 |---|---|---|
-| frequency | 915.0 MHz | `LORA_FREQUENCY` |
+| frequency | per elevator, below | `LORA_FREQUENCY`, in `[elev_a]` / `[elev_b]` / `[elev_c]` |
 | bandwidth | 125 kHz | `LORA_BANDWIDTH` |
 | spreading factor | 10 | `LORA_SPREADING_FACTOR` |
 | coding rate | 4/8 | `LORA_CODING_RATE` |
@@ -48,9 +57,27 @@ none of them touch a field offset.
 | hardware CRC | on | RadioLib default |
 | LDRO | off | `Ts` = 8.192 ms < 16 ms, so it is not required |
 
-Both ends are the same module (Wio-SX1262 on a XIAO ESP32S3) and both are
-configured from the same `[lora_base]` section, so there is no way for the car
-and the bridge to end up on different settings without editing one file.
+The frequency is the one row above that is not the same on every board. The
+per-shaft plan, with the `txId` that goes with it (section 2):
+
+| | elevator A | elevator B | elevator C |
+|---|---|---|---|
+| `LORA_FREQUENCY` | 913.0 MHz | 915.0 MHz | 917.0 MHz |
+| `ELEV_TX_ID` | 0x41, `'A'` | 0x42, `'B'` | 0x43, `'C'` |
+
+Section 1.3 derives the 2 MHz spacing. Everything else in the table above -
+bandwidth, spreading factor, coding rate, sync word, TX power, preamble - is
+identical on all three systems.
+
+Both ends are the same module (Wio-SX1262 on a XIAO ESP32S3), and every
+parameter except the frequency comes from the same `[lora_base]` section, so
+there is no way for a car and a bridge to end up on different modulation
+settings without editing one file. The frequency is the exception: it comes from
+the shaft's own `[elev_*]` section, so a car flashed `elevator_tx_a` talking to a
+bridge flashed `bridge_rx_b` sits 2 MHz away and is simply never heard. That
+failure is total and silent - the bridge counts nothing at all, not even a CRC
+error - which is why `docs/FLASHING.md` insists on labelling boards rather than
+trusting memory.
 
 ### Where BW125 came from
 
@@ -124,7 +151,8 @@ for several bytes and then costs 65.5 ms all at once.
 | 25 | 56 | 559 ms | +65.5 ms |
 | 32 | 64 | 625 ms | |
 
-What a step costs in current, at the spec §2.2 duty cycles and 140 mA:
+What a step costs in current, at the 2026-09-11 spec §2.2 duty cycles and
+140 mA:
 
 | change | added current |
 |---|---|
@@ -133,7 +161,7 @@ What a step costs in current, at the spec §2.2 duty cycles and 140 mA:
 
 Sanity check on the same arithmetic against the spec's own line items:
 `297 ms / 2 s x 140 mA x 0.712 = 14.8 mA` and `494 ms / 60 s x 140 mA = 1.15 mA`,
-which is the 15 mA and 1.2 mA in spec §2.2.
+which is the 15 mA and 1.2 mA in the 2026-09-11 spec §2.2.
 
 ### 1.2 Why neither LoRa format carries an application CRC
 
@@ -155,6 +183,73 @@ Note that the hardware CRC is already in the airtime numbers - it is the
 
 The ESP-NOW leg is different and **does** carry a CRC. Section 5 explains why.
 
+### 1.3 Three systems in one building
+
+Elevators A, B and C each run a complete copy of everything in this file. The
+shafts are far apart, but far apart is not isolation: at 22 dBm a LoRa carrier
+travels a long way through a building, and the design assumes all three
+transmitters are audible everywhere rather than assuming they are not and
+finding out during an evening peak.
+
+On one frequency, three cars are pure ALOHA. Nothing in this link listens before
+it transmits - there is no carrier sense anywhere in it. A STATE packet occupies
+297 ms (section 1.1) and goes out every 2 s while the car is active, so at the
+71.2% active duty the reference capture shows for an evening peak, each car
+offers
+
+```
+  0.5 x 0.712 = 0.356 packets/s
+```
+
+ALOHA's vulnerable window is two packet lengths, because a packet is destroyed
+by an interferer starting any time from one packet length before it to one
+packet length after it begins:
+
+```
+  2 x 0.297 = 0.594 s
+
+  P(survive two interferers) = exp(-2 x 0.356 x 0.594) = 0.656
+```
+
+**About one STATE packet in three would be lost**, on top of the 5.21% batch
+loss the shaft already costs (`ALGORITHM.md` §9), and concentrated in exactly the
+evening peak when all three cars are busy at once. The displays' 180 s staleness
+timer absorbs the occasional hole; it is not sized for a third of the traffic.
+
+Hence 913.0 / 915.0 / 917.0 MHz. 2 MHz against a 125 kHz occupied bandwidth is
+roughly 16 channel widths, chosen against the near-far case - one shaft's
+transmitter at arm's length from another shaft's bridge - rather than against the
+typical case, where the shafts are far apart anyway. All three sit inside the
+902-928 MHz ISM band with wide margin to both edges, and the modulation,
+occupied bandwidth and duty cycle are unchanged from the single-elevator
+deployment, so nothing about the regulatory picture changes.
+
+**A per-elevator sync word is not the fix, and mistaking it for one is the most
+likely wrong idea to have about this section.** `LORA_SYNC_WORD` stays 0x34 on
+all three systems. The sync word is checked after preamble detection and
+demodulation: by the time the modem can compare it, the frame has already been
+received. It filters frames that arrived; it does nothing to two 22 dBm carriers
+overlapping in the air, which destroy each other before any field of either
+packet exists to be examined. Frequency separation is the only mechanism here
+that prevents a collision rather than classifying the wreckage afterwards. The
+same argument applies to the `tag` byte and to the `txId` check in section 2 -
+all three are filters, and a filter runs strictly after the collision it cannot
+prevent.
+
+`txId` is still worth having, for a different reason: it turns "a foreign packet
+reached this bridge" from an inference off a loss statistic into a counted event,
+`dropForeignTxId` in the bridge's console summary. That is a bench instrument
+rather than a field one - the bridge console is a wall-powered box mid-shaft that
+nobody is standing at during normal operation - and with 2 MHz of separation it
+should read 0 forever. A non-zero value is the unambiguous evidence of
+cross-shaft leakage that a loss statistic can only hint at.
+
+The ESP-NOW side is separated the same way, channels 1, 6 and 11, one per shaft,
+but for an entirely different class of reason: `origSeq` collisions between three
+minting bridges, and a relay jitter window oversubscribed by 32 relaying
+displays. `MESH.md` carries that argument. The envelope itself does not change;
+section 5 says why.
+
 ---
 
 ## 2. `0xE0` STATE - 8 bytes, 297 ms
@@ -171,7 +266,7 @@ agree about padding.
 | off | size | type | field | units / range | meaning |
 |---|---|---|---|---|---|
 | 0 | 1 | u8 | `tag` | 0xE0 | format identifier, `ELEV_TAG_STATE` |
-| 1 | 1 | u8 | `txId` | 0-255 | transmitter identity. Only one car node exists today; the bridge drops this before the mesh |
+| 1 | 1 | u8 | `txId` | `'A'`/`'B'`/`'C'` | which shaft this came from, as ASCII: 0x41, 0x42 or 0x43 (`ELEV_TX_ID`). The bridge drops any packet whose `txId` is not its own elevator, and strips the field before the mesh |
 | 2 | 1 | u8 | `seq` | 0-255, wraps | loss statistics only - see section 6 |
 | 3 | 1 | u8 | `floor` | 0-255 | confirmed 1-based floor index. **0 means the model is not ready** and the floor is being withheld. Index 1 is the lowest landing ever seen, not a name - the display maps index to label through `FLOOR_LABELS` |
 | 4 | 2 | i16 | `posQ8` | 1/256 floor, +/-128 floors | live fractional position relative to floor 1. **Animation only** - see section 4 |
@@ -216,12 +311,13 @@ shifted the wrong way in one place out of four.
 
 ### A real STATE packet, decoded
 
-Car ascending between floor 3 and floor 4, model good, clean lattice fit:
+Elevator B, car ascending between floor 3 and floor 4, model good, clean lattice
+fit:
 
 ```
   offset:   0    1    2    3    4    5    6    7
           +----+----+----+----+---------+----+----+
-          | E0 | 01 | 2A | 03 |  9A 02  | 0B | F2 |
+          | E0 | 42 | 2A | 03 |  9A 02  | 0B | F2 |
           +----+----+----+----+---------+----+----+
             |    |    |    |       |      |    |
             |    |    |    |       |      |    +-- confidence = 242
@@ -244,7 +340,8 @@ Car ascending between floor 3 and floor 4, model good, clean lattice fit:
             |    |    |         arrived anywhere yet.
             |    |    |
             |    |    +-- seq = 0x2A = 42
-            |    +-- txId = 1
+            |    +-- txId = 0x42 = 'B', so this is elevator B. A bridge
+            |         built for A or C drops the packet here and counts it.
             +-- tag = 0xE0, STATE
 ```
 
@@ -265,13 +362,13 @@ out.
 | off | size | type | field | units | range / meaning |
 |---|---|---|---|---|---|
 | 0 | 1 | u8 | `tag` | | 0xE1, `ELEV_TAG_STATS` |
-| 1 | 1 | u8 | `txId` | | transmitter identity |
+| 1 | 1 | u8 | `txId` | | the shaft, ASCII `'A'`/`'B'`/`'C'` - same field, same bridge check and same stripping as STATE |
 | 2 | 1 | u8 | `seq` | | wraps; loss statistics only |
 | 3 | 2 | u16 | `batteryMv` | mV | pack voltage. A 4S LiFePO4 spans 11200-14600 mV. Divider is +/-2-3% uncalibrated |
 | 5 | 2 | u16 | `dist24hM` | m | distance over the last 24 hourly buckets. Uptime-relative, not wall clock |
 | 7 | 4 | u32 | `distTotalM` | m | lifetime odometer, survives reboot via NVS |
 | 11 | 2 | u16 | `pitchMm` | mm | learned floor pitch. 2871 on the reference capture; the acceptance gate is +/-1 mm, which is why the unit is mm |
-| 13 | 1 | u8 | `nFloors` | | learned floor count. 10 at Simmons |
+| 13 | 1 | u8 | `nFloors` | | learned floor count - the *span* of learned indices, `maxIndex() - minIndex() + 1`, not a tally of landings visited. 10 in a 1-10 shaft (elevator B), 11 where there is a basement (A and C). The display compares it against its own `FLOOR_LABEL_COUNT`; `docs/FLASHING.md` covers what it shows when the two disagree |
 | 14 | 2 | u16 | `trips` | | floor-to-floor moves counted |
 | 16 | 2 | u16 | `stops` | | confirmed stops counted |
 | 18 | 4 | u32 | `uptimeS` | s | seconds since boot |
@@ -319,12 +416,13 @@ Accessors: `elevStatsSensorErr()`, `elevStatsModelReady()`,
 
 ### A real STATS packet, decoded
 
-Parked, healthy, a day into a run, model restored from NVS on the last reboot:
+Elevator B: parked, healthy, a day into a run, model restored from NVS on the
+last reboot.
 
 ```
   offset:  0    1    2     3  4     5  6     7  8  9 10    11 12   13
          +----+----+----+-------+-------+-------------+-------+----+
-         | E1 | 01 | 2B | 2C 33 | 51 0D | B5 F5 01 00 | 37 0B | 0A |
+         | E1 | 42 | 2B | 2C 33 | 51 0D | B5 F5 01 00 | 37 0B | 0A |
          +----+----+----+-------+-------+-------------+-------+----+
 
   offset: 14 15   16 17   18 19 20 21    22   23
@@ -333,7 +431,7 @@ Parked, healthy, a day into a run, model restored from NVS on the last reboot:
          +-------+-------+-------------+----+----+
 
   E1           tag           STATS
-  01           txId          1
+  42           txId          0x42 = 'B' - elevator B
   2B           seq           43
   2C 33        batteryMv     0x332C = 13100 mV = 13.10 V
                              13.3 V is rested-full and 12.8 V is where
@@ -341,7 +439,8 @@ Parked, healthy, a day into a run, model restored from NVS on the last reboot:
   51 0D        dist24hM      0x0D51 = 3409 m in the last 24 buckets
   B5 F5 01 00  distTotalM    0x0001F5B5 = 128437 m lifetime
   37 0B        pitchMm       0x0B37 = 2871 mm = 2.871 m  <- the learned pitch
-  0A           nFloors       10
+  0A           nFloors       10 landings. Elevator B has no basement;
+                             the same field off A or C reads 0B
   65 01        trips         0x0165 = 357 floor-to-floor moves
   FF 00        stops         0x00FF = 255 confirmed stops
   58 6E 01 00  uptimeS       0x00016E58 = 93784 s = 26.1 h
@@ -444,6 +543,24 @@ ESP-NOW frame carries. At `WIFI_PHY_RATE_LORA_250K` a 42-byte frame is about
 > because it is the more sensitive of the two LR rates, and at 42 bytes the
 > airtime difference is under a millisecond.
 
+### No elevator field, and why
+
+**The three-elevator deployment does not change one byte of this envelope.**
+`version` is still 1, `magic` is still 0x5E1E, and there is nothing here naming
+the shaft.
+
+An elevator id would never discriminate anything at runtime. The three floods
+run on separate WiFi channels, so a display physically cannot receive another
+shaft's frames; the check would be true by construction on every frame it ever
+ran on. It would cost a `MESH_VERSION` bump, which section 7 explains is a hard
+cut that strands every node not reflashed the same day.
+
+The failure it looks like it would guard is real: a display flashed for the
+wrong shaft. That one is caught by the display comparing the `nFloors` in STATS
+(section 3) against its own `FLOOR_LABEL_COUNT` - data the wire already carries,
+so the check costs no wire surface and no version bump.
+`docs/FLASHING.md` has the commissioning procedure that reads it.
+
 ### Wrapping
 
 `meshWrapLora()` takes the LoRa packet exactly as it came off the SX1262 and:
@@ -453,8 +570,12 @@ ESP-NOW frame carries. At `WIFI_PHY_RATE_LORA_250K` a 42-byte frame is about
 - copies `lora[3..]` into `payload`
 - refuses anything with `loraLen <= 3` or a body over 32 bytes, returning 0
 
-`txId` and `seq` are dropped because the mesh carries its own identity in
-`origSeq` and only one transmitter exists. The consequence is worth stating
+`txId` and `seq` are dropped because neither means anything downstream of the
+bridge. `txId` has already done its work by then: the bridge compared it against
+its own `ELEV_TX_ID` and dropped the packet if it did not match, so everything
+that reaches the wrapping step is this shaft's car by construction. `seq` is a
+LoRa-hop loss counter, and the mesh carries its own identity in `origSeq`
+instead. The consequence is worth stating
 plainly: **a display cannot compute LoRa packet loss.** Only the bridge sees
 `seq`. If you ever want per-floor link statistics on the screens, that is a
 format change, not a firmware tweak.
@@ -498,12 +619,13 @@ once by the bridge, then up to 7 relays.
 
 ### Flood rules
 
-Identical on the bridge and all ten displays. These live in `espnow_mesh.cpp`;
+Identical on the bridge and on every display in that shaft - ten of them, or
+eleven where there is a basement. These live in `espnow_mesh.cpp`;
 the constants come from `[mesh_base]` in `platformio.ini`.
 
 | rule | constant | value |
 |---|---|---|
-| channel | `MESH_CHANNEL` | 1 |
+| channel | `MESH_CHANNEL` | per elevator: 1 (B), 6 (A), 11 (C) - `MESH.md` |
 | TX power | `MESH_TX_POWER_QDBM` | 84 quarter-dBm, quantised by the PHY to 80 (20 dBm) |
 | hop limit | `MESH_HOP_LIMIT` | 8 |
 | back-to-back sends per frame | `MESH_REPEATS` | 3 |
@@ -511,14 +633,19 @@ the constants come from `[mesh_base]` in `platformio.ini`.
 | dedup ring depth | `MESH_DEDUP_RING` / `MESH_DEDUP_DEPTH` | 32 |
 | PHY | `MESH_PHY_RATE` | `WIFI_PHY_RATE_LORA_250K` (802.11 LR) |
 
-**The jitter is not a tuning refinement.** Ten displays hear the same frame
-within microseconds of each other. If each relays as soon as it has decoded,
-all ten transmit into the same air at the same instant - CSMA backoff is measured
-against a channel that was idle a moment ago, so they do not back off from each
-other - and every listener gets ten overlapping frames it can decode none of. The
-relay then dies exactly where the mesh needed it most, one hop from the bridge. A
-5-40 ms window spreads those ten transmits over far more than the ~1.3 ms a frame
-occupies, so they queue instead of colliding.
+**The jitter is not a tuning refinement.** The ten or eleven displays in one
+shaft hear the same frame within microseconds of each other. If each relays as
+soon as it has decoded, they all transmit into the same air at the same instant -
+CSMA backoff is measured against a channel that was idle a moment ago, so they do
+not back off from each other - and every listener gets ten overlapping frames it
+can decode none of. The relay then dies exactly where the mesh needed it most,
+one hop from the bridge. A 5-40 ms window spreads those transmits over far more
+than the ~1.3 ms a frame occupies, so they queue instead of colliding.
+
+This window is also why the three shafts are not merged into one building-wide
+flood: 32 displays and 3 bridges relaying a single frame would put roughly 96
+transmissions into the same 35 ms, which re-creates precisely the collision the
+jitter was introduced to prevent. `MESH.md` has that arithmetic.
 
 Destination is always broadcast, `ff:ff:ff:ff:ff:ff`. There are no MAC addresses
 configured anywhere in this system, so a display can be swapped for a spare with
@@ -628,8 +755,9 @@ enough to stay a linear scan over one cache line's worth of u16.
 
 ## 7. Extending the format without breaking deployed displays
 
-Ten displays are screwed to walls in a stairwell. Assume you will not want to
-reflash all of them.
+Thirty-two displays are screwed to walls across three stairwells, and the three
+transmitters are inside cars that have to be taken out of service to open.
+Assume you will not want to reflash all of them.
 
 **What is safe:**
 
@@ -653,8 +781,8 @@ reflash all of them.
 - **STATS has none.** 24 bytes is the top of its 48-symbol step. Byte 25 costs 65.5 ms, but only 0.15 mA, because it goes out once a minute instead of thirty times.
 
 So: put a cheap field in STATS, not in STATE, unless it genuinely has to move at
-2 s. And if you must grow STATE past 9 bytes, re-run the power budget in spec §2
-rather than assuming the margin absorbs it.
+2 s. And if you must grow STATE past 9 bytes, re-run the power budget in the
+2026-09-11 spec §2 rather than assuming the margin absorbs it.
 
 **The recommended route** for anything new is a third tag. It costs nothing on
 the deployed displays, it floods for free, and it lets you deploy the transmitter
@@ -662,19 +790,32 @@ side and the display side on separate weekends.
 
 ---
 
-## 8. Where this differs from the design spec
+## 8. Where this differs from the design specs
 
-The spec's section 4 was written before the headers. The field tables agree
-exactly - every offset, size and unit in sections 2, 3 and 5 above matches
+There are two specs now, and they govern different things:
+
+| document | governs |
+|---|---|
+| `docs/superpowers/specs/2026-09-11-simmevator-design.md` | the original single-elevator design. Its §4 is the first draft of the two wire formats, and its §2.2 is the power budget quoted in section 1.1 |
+| `docs/superpowers/specs/2026-09-18-three-elevator-deployment-design.md` | the three-elevator deployment: the frequency plan in §2, the `txId` assignment and bridge filter in §3, and the per-shaft build flags in §5.1 |
+
+The second spec changes no byte of either format. It is a set of per-elevator
+build flags plus one display state, so it is authoritative for the values in
+section 1.3 and for the meaning of `txId`, and it touches nothing else in this
+file. The field tables remain governed by the headers.
+
+The 2026-09-11 spec's section 4 was written before the headers. The field tables
+agree exactly - every offset, size and unit in sections 2, 3 and 5 above matches
 `elev_packet.h` and `mesh_packet.h` byte for byte. The differences are in what
 the spec leaves out or names differently:
 
-| | spec §4 | code |
+| | 2026-09-11 spec §4 | code |
 |---|---|---|
 | mesh payload ceiling | not stated | `MESH_MAX_PAYLOAD` 32, `MESH_MAX_FRAME_BYTES` 42 |
 | mesh reject reasons | "magic, version, or CRC" | also `MESH_ERR_SHORT` and `MESH_ERR_LENGTH` |
 | dedup depth constant | "32-deep ring" | `MESH_DEDUP_DEPTH` in `mesh_packet.h`, `MESH_DEDUP_RING` as the build flag; `espnow_mesh.cpp` static_asserts they agree |
 | `txId` reaching displays | not mentioned | dropped at the bridge; displays never see it |
+| `txId` values | "transmitter identity", unassigned | ASCII `'A'`/`'B'`/`'C'`, assigned by the 2026-09-18 spec §3 and checked against `ELEV_TX_ID` |
 | `MESH_HOP_LIMIT` | "hop limit 8" | defined as 8 in both `platformio.ini` and `mesh_packet.h`, and the header's definition is not `#ifndef`-guarded - so it is not actually an overridable build knob |
 
 Where the two disagree, the code wins.

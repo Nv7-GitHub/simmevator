@@ -1,19 +1,32 @@
 # Building the hardware
 
-Three devices, built in this order: the transmitter (the only one with any
+Three device types, built in this order: the transmitter (the only one with any
 wiring in it), the bridge (twenty minutes, mostly deciding where to put it), and
-ten displays (unbox, plug in).
+the displays (unbox, plug in).
+
+Three shafts, not one. Elevators A and C have a basement landing and eleven
+displays each; elevator B is the ten-landing shaft this system was first built
+for, and is unchanged in every respect.
 
 | device | where it lives | power | what it does |
 |---|---|---|---|
-| transmitter | on top of / inside the elevator car | LiFePO4 4S pack | reads the barometer, decides the floor, transmits LoRa |
-| bridge | floor 5 | USB-C wall adapter | receives LoRa, floods it over ESP-NOW |
-| display ×10 | one per floor | USB-C wall adapter | shows the floor, relays the mesh |
+| transmitter ×3 | on top of / inside each elevator car | LiFePO4 4S pack | reads the barometer, decides the floor, transmits LoRa |
+| bridge ×3 | one per shaft, floor 5 (section 6) | USB-C wall adapter | receives LoRa, floods it over ESP-NOW |
+| display ×32 | one per landing per shaft: A 11, B 10, C 11 | USB-C wall adapter | shows the floor, relays the mesh |
+
+**The three builds are mechanically identical.** Nothing in sections 2 to 5
+differs between A, B and C - the same stack, the same divider, the same buck,
+the same calibration procedure, the same charger, the same enclosure. The only
+thing that differs is which firmware image goes on the board, and which shaft
+the finished board is carried to. So those sections are written once and mean
+all three; where one says "the transmitter", build three of them.
 
 Everything below is drawn from the design spec
-(`docs/superpowers/specs/2026-09-11-simmevator-design.md`), `platformio.ini`,
-and the module headers in `src/`. Where a number is not from one of those, it
-says so.
+(`docs/superpowers/specs/2026-09-11-simmevator-design.md`), the three-elevator
+deployment spec
+(`docs/superpowers/specs/2026-09-18-three-elevator-deployment-design.md`),
+`platformio.ini`, and the module headers in `src/`. Where a number is not from
+one of those, it says so.
 
 ---
 
@@ -22,7 +35,7 @@ says so.
 Reproduced from spec section 3.6. This list has already been trimmed once - see
 the note after the tables before you add anything back.
 
-**Transmitter (×1 assembly)**
+**Transmitter (×3 assemblies; the Qty column is per assembly)**
 
 | Part | Qty | Notes |
 |---|---|---|
@@ -42,7 +55,7 @@ electrolytic (the node averages ~23 mA, so the module's own ceramics are
 sufficient), and no inline fuse (the pack's BMS covers overcurrent). The
 enclosure is 3D printed.
 
-**Bridge (×1)**
+**Bridge (×3, one per shaft; Qty is per bridge)**
 
 | Part | Qty |
 |---|---|
@@ -50,19 +63,28 @@ enclosure is 3D printed.
 | Seeed Wio-SX1262 for XIAO | 1 |
 | USB-C 5 V adapter + cable | 1 |
 
-**Displays (×10)**
+**Displays (×32, all three shafts)**
 
 | Part | Qty | Notes |
 |---|---|---|
-| ELEGOO ESP32 CYD 2.8" ILI9341 240×320 | 10 | sold in 2-packs → 5 packs |
-| USB-C 5 V / 1 A adapter | 10 | |
-| USB-C cable | 10 | |
+| ELEGOO ESP32 CYD 2.8" ILI9341 240×320 | 32 | sold in 2-packs → 16 packs |
+| USB-C 5 V / 1 A adapter | 32 | |
+| USB-C cable | 32 | |
+
+32, not 30: **A 11 + B 10 + C 11 = 32**, because A and C each have a basement
+landing and B does not. Count the landings, not the shafts - ordering 30 because
+"three tens" is the easy mistake, and it leaves the two basements dark.
 
 Mounts are 3D printed.
 
-**Totals to buy:** 2 × XIAO ESP32S3 · 2 × Wio-SX1262 · 1 × BMP390 · 1 × battery +
-charger · 1 × MP1584EN · 2 × resistors · 1 × spade pair · 10 × CYD · 11 × USB-C
-supplies. Enclosure and the ten display mounts are printed.
+**Totals to buy:** 6 × XIAO ESP32S3 · 6 × Wio-SX1262 · 3 × BMP390 · 3 × battery +
+charger · 3 × MP1584EN · 6 × resistors · 3 × spade pair · 32 × CYD · 35 × USB-C
+supplies. Three enclosures and 32 display mounts are printed.
+
+The USB-C count is 32 displays + 3 bridges = 35; the transmitters run off their
+packs and take no adapter. Note that the build does not simply triple: the
+electronics scale ×3, but the displays scale ×3.2, and the displays are the bulk
+of the parts count. The two basement landings are the whole of that difference.
 
 ### 1.1 Where is the fuse?
 
@@ -73,7 +95,7 @@ The four things a reader usually expects to find in this list and does not:
 | inline fuse | the pack's BMS is the overcurrent and undervoltage protection. It is inside the pack, on the cell side of the terminals, and it is the reason the pack has to be a BMS pack rather than four bare cells. |
 | buck input electrolytic | the node averages ~23 mA. The MP1584EN module's own input ceramics handle that; the electrolytic is there for modules running amps. |
 | filter cap across the divider bottom leg | the reading is taken once a minute off a rail that moves over hours. The filtering is done in software instead: 32 samples, median not mean (spec 3.2, `battery.h`). A median also throws away the occasional wild sample the S3's SAR ADC produces, which a capacitor would not. |
-| barrel jack, separate antennas, enclosure, display mounts | the Wio-SX1262 ships with its antenna; the enclosure and the ten mounts are 3D printed; the pack connects through spade terminals so it can come off for charging without a connector in the middle. |
+| barrel jack, separate antennas, enclosure, display mounts | the Wio-SX1262 ships with its antenna; the three enclosures and the 32 mounts are 3D printed; the pack connects through spade terminals so it can come off for charging without a connector in the middle. |
 
 If you decide to add the fuse anyway, put it on the pack side of the spade pair
 so it protects the wiring and not just the buck.
@@ -107,8 +129,11 @@ Everything the car node uses, in one table. From spec 3.1, `lora_link.h`, and
 | 5 V in | 5V | - | the buck |
 | ground | GND | - | common with the pack minus |
 
-The BMP390 runs on `Wire1` at 400 kHz, address 0x77. The radio is 915 MHz,
-SF10 / BW125 / CR4-8 at 22 dBm.
+The BMP390 runs on `Wire1` at 400 kHz, address 0x77. The radio is SF10 / BW125 /
+CR4-8 at 22 dBm on all three systems; only the centre frequency differs - 913.0
+MHz on A, 915.0 MHz on B, 917.0 MHz on C, for the collision reasons in spec 2.1.
+That is a build flag, not a wiring difference. The board you solder is the same
+board whichever shaft it ends up in.
 
 ---
 
@@ -129,6 +154,9 @@ through the two 7-pin headers.
    wrong way puts the pack rail onto a control line.
 2. Press them home evenly. They should sit flat with no gap.
 3. Screw the 915 MHz antenna that came with the Wio-SX1262 onto its connector.
+   It is a band antenna, not a spot-tuned one, and 913.0 / 915.0 / 917.0 MHz all
+   sit deep inside the 902-928 MHz ISM band - so the same antenna serves all
+   three shafts and there is nothing to select here.
 
 **Do not power the radio without the antenna attached.** That is general RF
 practice rather than anything measured here - an unterminated PA reflects its
@@ -398,10 +426,18 @@ the maths is integer division, and `13280/13112` carries more resolution than
 `101/100` does. The intermediate is computed in 64-bit, so there is no headroom
 problem with numbers this size.
 
-This is **per unit**. It corrects the resistors you actually soldered and the
-eFuse calibration curve of the chip you actually have. If you ever build a
-second transmitter, note in the repo which numbers belong to which board,
-because nothing in the firmware can tell them apart.
+This is **per unit**, and there are now three units. It corrects the resistors
+you actually soldered and the eFuse calibration curve of the chip you actually
+have, so each of the three transmitters carries its own pair of numbers and they
+will not agree with each other.
+
+Nothing in the firmware can tell the boards apart, which is what makes this
+worth a warning rather than a footnote: a ratio measured on A's board and
+compiled into C's image does not fail, it reports a confidently wrong pack
+voltage on eleven screens, and it does so most convincingly near the thresholds
+in section 5 where the curve is flat. Record which pair belongs to which shaft,
+in the repo, alongside that elevator's other build flags - the per-elevator
+transmitter environments are the natural place for them.
 
 ---
 
@@ -431,16 +467,25 @@ What the rest of the system does while it is off, and when it comes back:
 |---|---|
 | pack off | keep the last floor for 2.5 min, dim, then at 3 min grey out with the LED amber. A CHARGE BATTERY warning stays red throughout |
 | pack back on | within a minute the STATS heartbeat arrives, the screens un-grey, and a charged pack clears the battery warning. No pairing, nothing to press |
-| until the car visits **floor 1 and floor 10** | the floor shows `--` |
+| until the car visits **both ends of its own shaft** | the floor shows `--` |
 | after that | normal |
 
 The `--` is deliberate. The transmitter keeps the learned building across a
 reboot, but not the car's position: the car may have moved and the weather will
 have shifted the pressure reference, and a floor restored one out would stay one
-out forever. Seeing both ends of the building fixes the position exactly. **So
-after reconnecting, ride to floor 1 and floor 10.** It does not correct itself
-over time without that, and it does not need to - the first time the car
-naturally visits both ends it locks in.
+out forever. Seeing both ends of the shaft fixes the position exactly. **So
+after reconnecting, ride to the lowest landing and the highest.**
+
+Which landings those are is per shaft, and this is the one place in this
+document where getting it wrong is silent. In B they are floors 1 and 10. In A
+and C the bottom end is the **basement**, not floor 1: stopping at floor 1
+leaves the seen span one landing short of the learned span, the anchor never
+locks, and the screens sit on `--` while everything else looks healthy. Either
+order works - bottom-then-top and top-then-bottom are the same operation, and
+neither the code nor the procedure prefers one.
+
+It does not correct itself over time without that, and it does not need to - the
+first time the car naturally visits both ends it locks in.
 
 ### Voltage to state of charge
 
@@ -462,7 +507,10 @@ The warning **latches**. Once a reading crosses a threshold the level stays up,
 even if a later reading wobbles back above it, and clears only when the pack
 reads 13.3 V - which in practice means it has been charged. A warning that
 disappeared by itself would be the easy one to miss. The latch lives on the
-transmitter, and the level travels in the STATS flags, so all ten screens agree.
+transmitter, and the level travels in the STATS flags, so every screen in that
+shaft agrees - eleven of them in A and C, ten in B. It travels no further than
+that: the three meshes are on separate channels, so a flat pack in A is invisible
+on B's and C's screens, as it should be.
 
 A warning also does not grey out when the link goes stale, although everything
 else on the screen does. If the car node goes silent right after CHARGE BATTERY,
@@ -481,13 +529,21 @@ module and the XIAO's own regulator, against a 30-day requirement.
 
 ## 6. Bridge
 
-Mechanically trivial. The only decision is where it goes.
+Mechanically trivial, and the three are built identically. The only decision is
+where each one goes.
 
 1. Stack the Wio-SX1262 onto the XIAO exactly as in section 3.1, silkscreen
    matched, antenna screwed on.
-2. Flash it (`pio run -e bridge_rx -t upload`).
-3. Plug it into a USB-C 5 V adapter on floor 5. It sits in continuous LoRa
-   receive and floods what it hears over ESP-NOW, so it wants to stay powered.
+2. Flash it with the image for its shaft - `bridge_rx_a`, `bridge_rx_b` or
+   `bridge_rx_c`. The environment carries that shaft's LoRa frequency and mesh
+   channel, so a bridge flashed with the wrong image does not degrade, it hears
+   nothing at all and its displays sit grey. `FLASHING.md` has the table and the
+   upload commands; do not keep a second copy of them here.
+3. Label the board with its shaft letter before it leaves the bench, in the same
+   motion as flashing it (section 7).
+4. Plug it into a USB-C 5 V adapter on floor 5 of its own shaft. It sits in
+   continuous LoRa receive and floods what it hears over ESP-NOW, so it wants to
+   stay powered.
 
 **Antenna placement is the part that matters.** ALGORITHM.md section 9 measured
 the link and found that loss barely tracks SNR at all (r = −0.13): 5.21% batch
@@ -517,22 +573,74 @@ origin of the flood. In practice the floor 5 display is next to it, so this is
 rarely a constraint - but do not put the bridge somewhere the mesh cannot
 follow it.
 
+### 6.1 Is floor 5 still the middle when the shaft has a basement?
+
+Worth doing the arithmetic rather than assuming, because A and C have an extra
+landing at the bottom and the instinct is to compensate by dropping their
+bridges to floor 4.
+
+Count landings, not floor numbers. B's shaft has ten landings, an even count, so
+there is no single middle one: the centre falls between floors 5 and 6, and
+floor 5 was chosen of the two deliberately, because the weak landing sat above
+and biasing upward cost nothing. A and C have eleven landings, an odd count, so
+there **is** an exact middle landing - the sixth. Counting up from the bottom:
+B, 1, 2, 3, 4, 5. The sixth landing is floor 5.
+
+| shaft | landings | count | middle | bridge | landings above | landings below |
+|---|---|---|---|---|---|---|
+| A | B, 1-10 | 11 | the 6th = floor 5 | floor 5 | 5 | 5 |
+| B | 1-10 | 10 | between floors 5 and 6 | floor 5 | 5 | 4 |
+| C | B, 1-10 | 11 | the 6th = floor 5 | floor 5 | 5 | 5 |
+
+**Floor 5 is still the right answer, and in A and C it is a better one than it
+is in B** - it is the exact centre rather than the lower of two candidates. The
+extra landing at the bottom moves the midpoint down by half a landing, from
+halfway between floors 5 and 6 to floor 5 itself. Half a landing is not a
+relocation. Dropping those bridges to floor 4 would move them away from the
+centre and away from the upper shaft at the same time, for no gain.
+
+The furthest any display sits from its bridge is therefore 5 landings in all
+three shafts, which is what section 7's hop-limit slack is computed against.
+
+One caution about floor 9. `ALGORITHM.md` section 9 is a 3 h capture in **one**
+shaft, taken when this was a one-shaft building. It says where that shaft's
+shadow was; it does not predict where A's or C's will be, because steel,
+ductwork and cabinet placement differ landing by landing. Carry the shape of the
+finding into the other two shafts - one or two landings will be markedly worse
+than the median, and the fix is antenna placement rather than a radio setting -
+but do not carry the coordinate. Each shaft reveals its own weak landing in
+service, by the greyed-out screen and amber LED in section 7.
+
 ---
 
 ## 7. Displays
 
-Ten ELEGOO CYD boards. USB-C power and nothing else - no wiring, no soldering,
-no sensors. Flash each one (`pio run -e floor_display -t upload`), mount it, and
-plug it into a 5 V / 1 A adapter.
+32 ELEGOO CYD boards across three shafts - eleven in A, ten in B, eleven in C.
+USB-C power and nothing else: no wiring, no soldering, no sensors. Flash each one
+with its shaft's image (`floor_display_a`, `floor_display_b` or
+`floor_display_c`), mount it, and plug it into a 5 V / 1 A adapter. The upload
+commands and the which-image-on-which-board table are in `FLASHING.md`.
+
+**Label every board with its shaft letter before it leaves the bench.** Not
+afterwards, not from memory - in the same motion as flashing it, while the
+programmer is still attached. The image sets both the mesh channel and the
+label table, and nothing on the outside of a CYD says which it got. A board
+carrying the wrong shaft's label table does not blank or complain: in an
+eleven-landing shaft it shows a plausible floor number for every landing and
+every one of them is off by one. The firmware's own defence against that is the
+CHECK SHAFT screen (`FLASHING.md`), but it only fires once the car has run; the
+label is what stops the board being fitted in the first place.
 
 **The mesh is the constraint on where they go.** There is no WiFi network here
-and no router. Every display has to hear either the bridge or another display
-directly, over ESP-NOW on channel 1, and then relay onward. Spec 4.2:
+and no router. Every display has to hear either its bridge or another display in
+its own shaft directly, over ESP-NOW on that shaft's channel - 6 for A, 1 for B,
+11 for C - and then relay onward. Spec 4.2:
 
-- Flood rules are identical on the bridge and all ten displays; every node
-  relays each new `origSeq` exactly once.
-- Hop limit 8. Five floors is the furthest any display sits from the bridge on
-  floor 5, so 8 leaves slack for a detour around a dead node.
+- Flood rules are identical on the bridge and every display in that shaft; each
+  node relays each new `origSeq` exactly once.
+- Hop limit 8. Five landings is the furthest any display sits from its bridge in
+  any of the three shafts (section 6.1), so 8 leaves slack for a detour around a
+  dead node.
 - `WIFI_PROTOCOL_LR`, Espressif's long-range PHY, is worth about 7 dB over
   802.11b - which is the margin that makes floor-to-floor through concrete
   work at all.
@@ -550,9 +658,15 @@ Which means:
 - The 3D-printed mounts should hold the board with its back open to the
   corridor, not sandwiched against a steel frame.
 
+**The three meshes never help each other.** They are on separate channels by
+design, so a display in A cannot be rescued by a well-placed display in C however
+close the two shafts pass. Each shaft's mesh has to stand up on its own, and a
+mounting survey is a per-shaft exercise repeated three times, not one walk of the
+building.
+
 A display that cannot hear anything is not silent: it greys out and turns its
 RGB LED amber after 180 s without a STATS packet (spec 6). That is how you find
-a bad mounting position - walk the building and look at the LEDs.
+a bad mounting position - walk each shaft's landings and look at the LEDs.
 
 Power draw is small enough that a 1 A adapter is generous, and the LDR on
 GPIO34 handles night dimming on its own, so the board does not need to be
@@ -562,8 +676,10 @@ positioned for a light switch.
 
 ## 8. Pre-power-on checklist
 
-Run this on the transmitter with the pack **disconnected**, before it is ever
-connected. Each line is here because getting it wrong costs a board.
+Run this on **each** transmitter with the pack **disconnected**, before it is
+ever connected. Each line is here because getting it wrong costs a board. Three
+transmitters means running it three times; it is not a checklist you pass once
+for the design.
 
 | # | check | how | pass looks like |
 |---|---|---|---|
@@ -577,6 +693,7 @@ connected. Each line is here because getting it wrong costs a board.
 | 8 | Nothing on D4/D5 but the BMP390 | visual | SDA to D4, SCL to D5, not crossed |
 | 9 | Antenna attached | visual | screwed down before any power |
 | 10 | **USB unplugged** | visual | see section 3.5 |
+| 11 | **This is the right shaft's firmware** | the startup banner names the elevator, the LoRa frequency and the mesh channel it was built for | the letter matches the car this node is about to go into |
 
 Then, in order:
 
@@ -592,4 +709,25 @@ Then, in order:
    wrong resistor and leave you with a reading that is right at one voltage and
    wrong everywhere else.
 
-Only when all of that passes does the node go in the car.
+Only when all of that passes does the node go in the car - and only into the car
+whose letter check 11 printed.
+
+### 8.1 Before any board goes on a wall
+
+The bridges and the displays have no pack, no divider and no buck, so none of the
+checks above apply to them. They have exactly one failure mode worth a checklist,
+and it is the one that does not announce itself.
+
+| # | check | how | pass looks like |
+|---|---|---|---|
+| 1 | The board in your hand carries a shaft label | visual, on the board itself | a letter, written at the programmer (sections 6 and 7) |
+| 2 | That letter is the shaft you are standing in | visual | they match. An unlabelled board goes back to the bench, not on the wall - there is no way to read a CYD's build from its case |
+| 3 | For a display, the landing exists in that shaft's table | visual | a board going onto a basement landing belongs to A or C; B has no basement |
+| 4 | The shaft has exactly one bridge | count | two bridges on one channel collide in the `origSeq` space, which the bridge console warns about but nobody is watching |
+
+Then let the car run normally for a while and walk the landings: every screen in
+the shaft should show a floor rather than CHECK SHAFT. That is the acceptance
+test for the whole shaft, and it is deliberately read off the screens rather than
+off a console - during a commissioning run the car is on its pack, and section
+3.5 forbids a USB cable anywhere near the transmitter while it is. `FLASHING.md`
+has the procedure and what each screen state means.
