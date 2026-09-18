@@ -279,8 +279,17 @@ static bool        haveSprite = false;
 // an off-screen sprite so it is replaced in one push with no intermediate
 // blank frame.
 // ---------------------------------------------------------------------------
+// Longest thing the left pane ever draws is a commissioning line, not a floor
+// label: "MODEL 255  LABELS 32" is 20 characters, and nFloors is a u8 on the
+// wire, so that is the worst case and it is sized for rather than truncated.
+#define UI_LEFT_TEXT_MAX 24
+
 struct RenderedForm {
-  char     label[DISPLAY_MAX_LABEL_CHARS + 1];
+  // The left pane's two lines. In normal operation line1 is the floor label and
+  // line2 is empty; the commissioning states (spec 4.3) use both.
+  char     left1[UI_LEFT_TEXT_MAX];
+  char     left2[UI_LEFT_TEXT_MAX];
+  uint8_t  commission;
   uint16_t numberInk;
   bool     arrowShown;
   uint8_t  arrowDir;
@@ -432,26 +441,13 @@ void displayLedRgb(uint8_t r, uint8_t g, uint8_t b) {
 // Lifecycle
 // ===========================================================================
 
-DisplayUiState displayUiStateInit() {
-  DisplayUiState s;
-  s.floorIndex    = 0;
-  s.position      = 0.0f;
-  s.positionValid = false;
-  s.moving        = false;
-  s.direction     = ELEV_DIR_IDLE;
-  s.batteryVolts  = 0.0f;
-  s.batteryValid  = false;
-  s.batteryLevel  = DISPLAY_BATTERY_OK;
-  s.dist24hMiles  = 0.0f;
-  s.distValid     = false;
-  s.stateStale    = false;
-  s.statsStale    = false;
-  return s;
-}
+// displayUiStateInit() is inline in the header: it touches nothing on the panel
+// and the host-side commissioning tests build a state with it.
 
 void displayInvalidate() {
   memset(&gShown, 0, sizeof(gShown));
-  gShown.label[0] = '\0';
+  gShown.left1[0] = '\0';
+  gShown.left2[0] = '\0';
   gChromeValid    = false;
 }
 
@@ -500,13 +496,36 @@ bool displayBegin() {
   return haveSprite;
 }
 
+// The centred two-line message, drawn into any rectangle. displaySplash() uses
+// the whole canvas; the commissioning screens (spec 5.3) use the left pane
+// only, so the battery bar and the odometer keep reporting while somebody is
+// still sorting the shaft out. Neither invents a layout - this is the one
+// centred-message path.
+//
+// Line 1 steps down from font 4 to font 2 if it does not fit the width given.
+// "CHECK SHAFT" in font 4 is around 160 px against the left pane's 192, so it
+// fits today; the step-down is what stops a longer line added later from
+// running off the pane and being read as a different, shorter word.
+static void drawCentredLines(int16_t x, int16_t y, int16_t w, int16_t h,
+                             const char *line1, uint16_t ink1,
+                             const char *line2, uint16_t ink2) {
+  const int16_t cx = x + w / 2;
+  const int16_t cy = y + h / 2;
+  tft.setTextDatum(MC_DATUM);
+  if (line1 && *line1) {
+    tft.setTextColor(ink1, COL_BG);
+    tft.drawString(line1, cx, cy - 16, tft.textWidth(line1, 4) <= w ? 4 : 2);
+  }
+  if (line2 && *line2) {
+    tft.setTextColor(ink2, COL_BG);
+    tft.drawString(line2, cx, cy + 16, 2);
+  }
+}
+
 void displaySplash(const char *line1, const char *line2) {
   tft.fillScreen(COL_BG);
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(COL_INK_FRESH, COL_BG);
-  if (line1) tft.drawString(line1, DISPLAY_W / 2, DISPLAY_H / 2 - 16, 4);
-  tft.setTextColor(COL_INK_DIM, COL_BG);
-  if (line2) tft.drawString(line2, DISPLAY_W / 2, DISPLAY_H / 2 + 16, 2);
+  drawCentredLines(0, 0, DISPLAY_W, DISPLAY_H, line1, COL_INK_FRESH, line2,
+                   COL_INK_DIM);
   displayInvalidate();
 }
 
@@ -538,11 +557,19 @@ static void currentLabel(const DisplayUiState &s, char *out, size_t cap) {
 // limited by DISPLAY_DIGIT_MAX_H, two by the width of the left pane - around
 // 158 px. Stepping down until it fits is a handful of multiplies and avoids
 // re-deriving the aspect algebra every time the ratios change.
-static int labelHeight(const char *label) {
+static int labelHeightIn(const char *label, int maxW, int maxH) {
   for (int h = DISPLAY_DIGIT_MAX_H; h > 16; h -= 2) {
-    if (sevenSegStringWidth(label, h) <= NUM_W && h <= NUM_H) return h;
+    if (sevenSegStringWidth(label, h) <= maxW && h <= maxH) return h;
   }
   return 16;
+}
+
+// An eleven-entry table (spec 4.7) changes nothing here: the widest label is
+// still the two-character "10", which lands at h = 158 because two cells plus
+// one gap is 1.21 * h against the pane's 192 px. "B" is one cell, so it is
+// height-limited at DISPLAY_DIGIT_MAX_H like any single digit.
+static int labelHeight(const char *label) {
+  return labelHeightIn(label, NUM_W, NUM_H);
 }
 
 static void paintNumber(const char *label, uint16_t ink) {
@@ -559,6 +586,45 @@ static void paintNumber(const char *label, uint16_t ink) {
     sevenSegString(tft, NUM_X + (NUM_W - w) / 2, NUM_Y + (NUM_H - h) / 2, h, t,
                    ink, label);
   }
+}
+
+// The commissioning screens (spec 4.3, 4.4). Both take the left pane only: the
+// right-hand column is fed from STATS and is still telling the truth about the
+// battery and the odometer while the model is being sorted out, so there is no
+// reason to blank it.
+//
+// Drawn straight onto the panel rather than through the number sprite. The
+// sprite exists to stop a floor change from flashing, and these screens change
+// a handful of times across a whole commissioning run - there is no repaint to
+// hide, and the sprite is 8 bpp and sized for digits, not text.
+static void paintCommissionWords(const char *line1, const char *line2,
+                                 uint16_t ink) {
+  tft.fillRect(NUM_X, NUM_Y, NUM_W, NUM_H, COL_BG);
+  // The second line is the supporting detail, so it sits a step down the ink
+  // ladder - unless the ladder has already dimmed everything, in which case
+  // dimming it further would put it below what the panel resolves.
+  const uint16_t sub = (ink == COL_INK_FRESH) ? COL_INK_DIM : ink;
+  drawCentredLines(NUM_X, NUM_Y, NUM_W, NUM_H, line1, ink, line2, sub);
+}
+
+// Caption strip beneath the learned count. It comes out of the digits' height
+// rather than out of the pane, so the caption cannot creep down onto the
+// CHARGE BATTERY banner when that is up.
+static const int16_t LEARN_CAPTION_H = 34;
+
+static void paintLearning(const char *count, const char *caption, uint16_t ink) {
+  const int digitsH = NUM_H - LEARN_CAPTION_H;
+  const int h = labelHeightIn(count, NUM_W, digitsH);
+  const int t = sevenSegThickness(h);
+  const int w = sevenSegStringWidth(count, h);
+
+  tft.fillRect(NUM_X, NUM_Y, NUM_W, NUM_H, COL_BG);
+  sevenSegString(tft, NUM_X + (NUM_W - w) / 2, NUM_Y + (digitsH - h) / 2, h, t,
+                 ink, count);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(ink, COL_BG);
+  tft.drawString(caption, NUM_X + NUM_W / 2,
+                 NUM_Y + digitsH + LEARN_CAPTION_H / 2, 4);
 }
 
 static void paintArrow(bool shown, uint8_t dir, uint16_t ink) {
@@ -695,14 +761,66 @@ void displayUpdate(const DisplayUiState &s) {
 
   const uint16_t ink = inkFor(s);
 
-  // --- the number ---
-  char label[DISPLAY_MAX_LABEL_CHARS + 1];
-  currentLabel(s, label, sizeof(label));
-  if (strcmp(label, gShown.label) != 0 || ink != gShown.numberInk) {
-    paintNumber(label, ink);
-    strncpy(gShown.label, label, sizeof(gShown.label) - 1);
-    gShown.label[sizeof(gShown.label) - 1] = '\0';
-    gShown.numberInk = ink;
+  // --- the left pane: the floor, or why there is not one to show yet ---
+  //
+  // The verdict itself is displayCommissionState() in the header; everything
+  // here is wording and layout. gLabelCount rather than FLOOR_LABEL_COUNT: what
+  // matters is the number of labels this build can actually draw, which is what
+  // a mistyped FLOOR_LABELS gets wrong, and parseFloorLabels() has already
+  // complained on the console if the two disagree.
+  const DisplayCommission comm = displayCommissionState(s, gLabelCount);
+
+  char left1[UI_LEFT_TEXT_MAX] = "";
+  char left2[UI_LEFT_TEXT_MAX] = "";
+  switch (comm) {
+    case DISPLAY_COMMISSION_LEARNING:
+      // The learned span in the big digits, per spec 4.4. It is not a progress
+      // bar and will not tick 3, 4, 5 - an express run from the basement to the
+      // top jumps it straight to 11 - which is why the caption is "OF 11" and
+      // not a percentage or a bar.
+      snprintf(left1, sizeof(left1), "%u", (unsigned)s.modelFloors);
+      snprintf(left2, sizeof(left2), "OF %u", (unsigned)gLabelCount);
+      break;
+    case DISPLAY_COMMISSION_ANCHORING:
+      // Not "ride to the bottom, then the top": spec 4.5, the span grows the
+      // same either way. Naming an order invites somebody to invent a ritual
+      // and then to distrust a screen that did not get it.
+      snprintf(left1, sizeof(left1), "ANCHORING");
+      snprintf(left2, sizeof(left2), "RIDE TO BOTH ENDS");
+      break;
+    case DISPLAY_COMMISSION_MISMATCH:
+      snprintf(left1, sizeof(left1), "CHECK SHAFT");
+      // Both numbers, because the two failures behind this need opposite
+      // fixes: a car that never reached its lowest landing is fixed by riding
+      // the shaft, and a display carrying another shaft's label table is fixed
+      // by reflashing the board (spec 4.3).
+      snprintf(left2, sizeof(left2), "MODEL %u  LABELS %u",
+               (unsigned)s.modelFloors, (unsigned)gLabelCount);
+      break;
+    default: {
+      // Still DISPLAY_MAX_LABEL_CHARS wide: a label longer than the pane's two
+      // cells is truncated rather than shrunk, because a number that changes
+      // size on arrival reads as a fault (display_ui.h).
+      char label[DISPLAY_MAX_LABEL_CHARS + 1];
+      currentLabel(s, label, sizeof(label));
+      memcpy(left1, label, sizeof(label));
+      break;
+    }
+  }
+
+  if ((uint8_t)comm != gShown.commission || ink != gShown.numberInk ||
+      strcmp(left1, gShown.left1) != 0 || strcmp(left2, gShown.left2) != 0) {
+    if (comm == DISPLAY_COMMISSION_LEARNING) {
+      paintLearning(left1, left2, ink);
+    } else if (comm == DISPLAY_COMMISSION_OK) {
+      paintNumber(left1, ink);
+    } else {
+      paintCommissionWords(left1, left2, ink);
+    }
+    gShown.commission = (uint8_t)comm;
+    gShown.numberInk  = ink;
+    memcpy(gShown.left1, left1, sizeof(gShown.left1));
+    memcpy(gShown.left2, left2, sizeof(gShown.left2));
   }
 
   // --- direction arrow, only while moving ---

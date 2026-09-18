@@ -40,8 +40,29 @@
 // the number and nothing else needs editing.
 //
 
+#include <stddef.h>
+#include <stdint.h>
+
+// The commissioning decision below (displayCommissionState) is the one thing in
+// this header that a host test has to be able to reach: spec 5.6 requires the
+// four screen states to be checked on the host, and spec 4.3's truth table is
+// the most safety-relevant logic in the change, so it must exist in exactly one
+// place rather than being restated in a test. Everything that needs the panel
+// is therefore behind this guard, and `pio test -e native` - which has neither
+// Arduino nor TFT_eSPI on its include path - gets a header with the pure part
+// and nothing else. A firmware build always takes the other branch; if it ever
+// did not, the missing declarations are a wall of compile errors, not a silent
+// change of behaviour.
+#if defined(__has_include)
+#  if __has_include(<TFT_eSPI.h>)
+#    define DISPLAY_UI_HAVE_PANEL 1
+#  endif
+#endif
+
+#ifdef DISPLAY_UI_HAVE_PANEL
 #include <Arduino.h>
 #include <TFT_eSPI.h>
+#endif
 
 // ---------------------------------------------------------------------------
 // Board wiring - defaults match the ESP32-2432S028R; platformio.ini sets them
@@ -308,11 +329,134 @@ struct DisplayUiState {
   // the thresholds above for why silence on STATE means nothing is wrong.
   bool stateStale;
   bool statsStale;
+
+  // MODEL_READY out of the STATE flags, carried separately from positionValid
+  // even though floor_display.cpp sets both from it today. They answer
+  // different questions: positionValid asks "may the number animate", and the
+  // renderer is free to stop honouring it (it already ignores it while the car
+  // is parked), whereas modelReady is an input to the commissioning verdict
+  // below, where spec 4.3's truth table distinguishes a model that is learning
+  // from one that is ready and wrong. Overloading one field would make a
+  // change to the animation rule silently move the CHECK SHAFT threshold.
+  bool modelReady;
+
+  // nFloors out of STATS: the span of learned floor indices, NOT a tally of
+  // landings visited (floor_monitor.h:530, spec 4.4). modelFloorsValid is
+  // false until the first STATS heartbeat lands, which is up to 60 s after
+  // boot.
+  uint8_t modelFloors;
+  bool    modelFloorsValid;
+
+  // ELEV_FLAG_NVS_RESTORED out of the STATS flags. It is what separates "this
+  // model was learned here, from nothing" from "this model came back out of
+  // flash and is waiting to be anchored" - two conditions that look identical
+  // from STATE alone, because elevator_tx.cpp sends floor = 0 for both.
+  bool nvsRestored;
 };
 
 // A DisplayUiState with everything unknown and nothing stale - the state to
 // start from, so a caller never has to remember to zero a field.
-DisplayUiState displayUiStateInit();
+//
+// Inline, and deliberately free of anything from the panel: the commissioning
+// tests build a state here on the host.
+inline DisplayUiState displayUiStateInit() {
+  DisplayUiState s;
+  s.floorIndex       = 0;
+  s.position         = 0.0f;
+  s.positionValid    = false;
+  s.moving           = false;
+  s.direction        = 0;  // ELEV_DIR_IDLE; elev_packet.h is not included here
+  s.batteryVolts     = 0.0f;
+  s.batteryValid     = false;
+  s.batteryLevel     = DISPLAY_BATTERY_OK;
+  s.dist24hMiles     = 0.0f;
+  s.distValid        = false;
+  s.stateStale       = false;
+  s.statsStale       = false;
+  s.modelReady       = false;
+  s.modelFloors      = 0;
+  s.modelFloorsValid = false;
+  s.nvsRestored      = false;
+  return s;
+}
+
+// ---------------------------------------------------------------------------
+// The commissioning readout (spec 4)
+// ---------------------------------------------------------------------------
+// Why this exists at all: `floor` index 1 means "the lowest landing ever seen",
+// not a name. A car commissioned over a period in which nobody pressed B learns
+// a 10-landing span in an 11-landing shaft, sets modelReady, and then reports
+// confident indices that the label table maps one floor too low - on every
+// screen in the shaft, indefinitely, and plausibly (spec 4.1). Nothing inside
+// the algorithm can see it: anchorStep() locks when the seen span equals the
+// learned span, and here they agree. FLOOR_LABEL_COUNT is the only thing in the
+// system that knows how many landings the building has, so the check lives
+// here.
+//
+// It is rendered rather than logged because during a commissioning run there is
+// no serial port anywhere in the system: the bridge is a wall box mid-shaft and
+// HARDWARE.md 3.5 forbids USB on the transmitter while the buck feeds its 5V
+// pad, which is exactly the condition a run happens in (spec 4.2).
+enum DisplayCommission {
+  DISPLAY_COMMISSION_OK = 0,    // normal operation - render the floor
+  DISPLAY_COMMISSION_LEARNING,  // count in the big digits, "OF n" beneath
+  DISPLAY_COMMISSION_ANCHORING, // words: ride to both ends, either order
+  DISPLAY_COMMISSION_MISMATCH   // CHECK SHAFT
+};
+
+// Spec 4.3's truth table, written down once.
+//
+//   nFloors < labelCount, ready 0, restored 0 -> LEARNING
+//   nFloors == labelCount, ready 0, restored 1 -> ANCHORING
+//   nFloors == labelCount, ready 1             -> OK
+//   nFloors != labelCount, ready 1             -> MISMATCH
+//
+// The combinations the table does not name are resolved towards the least
+// confident state, the same principle floor_monitor.h:884 applies to
+// anchorStep: a screen that says CHECK SHAFT when it should not is recovered by
+// one ride to both ends, and a confidently wrong floor on eleven screens is not
+// recovered at all, because nobody can tell it is wrong.
+//
+//   labelCount == 0     -> MISMATCH. FLOOR_LABELS failed to parse, so there is
+//                          no building to compare against and no label to draw.
+//   nFloors > labelCount, not ready
+//                       -> MISMATCH. The span is already wider than the shaft;
+//                          learning more cannot make that right.
+//   nFloors < labelCount, not ready, restored
+//                       -> MISMATCH, not LEARNING. A model that came back out
+//                          of flash already short of the building is spec 4.1's
+//                          trap persisted, and the correct action - ride the
+//                          whole shaft - is the one CHECK SHAFT asks for. It
+//                          clears itself as soon as the span grows.
+//   nFloors == labelCount, not ready, not restored
+//                       -> ANCHORING. Full span but not ready, so it is waiting
+//                          on something; "ride to both ends" is both harmless
+//                          and the right move whatever that something is.
+//
+// !modelFloorsValid is the one case that resolves to OK, and it is a deliberate
+// exception to the rule above. Before the first STATS heartbeat - up to 60 s
+// after every boot, and after every mesh outage longer than that - there is no
+// nFloors to compare, so a CHECK SHAFT here would appear on every power cycle
+// and clear itself a minute later. An alarm that cries wolf once a day is one
+// nobody reads, which would cost more than the minute of coverage it buys. The
+// screen is not confidently wrong in that window either: with no model the
+// floor renders as "--" (spec 4.6).
+inline DisplayCommission displayCommissionState(const DisplayUiState &s,
+                                                uint8_t labelCount) {
+  if (labelCount == 0)      return DISPLAY_COMMISSION_MISMATCH;
+  if (!s.modelFloorsValid)  return DISPLAY_COMMISSION_OK;
+
+  if (s.modelReady) {
+    return (s.modelFloors == labelCount) ? DISPLAY_COMMISSION_OK
+                                         : DISPLAY_COMMISSION_MISMATCH;
+  }
+  if (s.modelFloors > labelCount)  return DISPLAY_COMMISSION_MISMATCH;
+  if (s.modelFloors == labelCount) return DISPLAY_COMMISSION_ANCHORING;
+  return s.nvsRestored ? DISPLAY_COMMISSION_MISMATCH
+                       : DISPLAY_COMMISSION_LEARNING;
+}
+
+#ifdef DISPLAY_UI_HAVE_PANEL
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -404,3 +548,5 @@ void sevenSegDigit(TFT_eSPI &gfx, int x, int y, int height, int thickness,
 // A whole label, left edge at x. Returns the width drawn.
 int sevenSegString(TFT_eSPI &gfx, int x, int y, int height, int thickness,
                    uint16_t colour, const char *text);
+
+#endif  // DISPLAY_UI_HAVE_PANEL

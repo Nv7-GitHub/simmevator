@@ -29,6 +29,25 @@
 #include "lora_link.h"
 
 // ---------------------------------------------------------------------------
+// Which elevator this bridge belongs to
+//
+// Deliberately no fallback value. A default here would let a bridge built
+// without an elevator selected compile cleanly and then silently accept
+// another shaft's packets - or reject its own - with nothing on the console to
+// say why. Spec 8 makes identity a build flag precisely so that the mistake is
+// caught at compile time rather than on a wall in a stairwell.
+// ---------------------------------------------------------------------------
+#ifndef ELEV_TX_ID
+#error "ELEV_TX_ID is not defined - build a per-elevator env (bridge_rx_a/b/c), not bridge_rx"
+#endif
+
+// txId sits at offset 1 in both LoRa formats (PROTOCOL.md sections 2 and 3);
+// elev_packet.h has no named constant for it because both unpackers index the
+// byte directly. The filter below runs before either unpacker, so it needs the
+// offset on its own.
+#define ELEV_OFF_TXID 1
+
+// ---------------------------------------------------------------------------
 // Receive buffer
 //
 // Deliberately larger than ELEV_MAX_PACKET_BYTES. loraPoll() truncates to the
@@ -95,6 +114,7 @@ static uint32_t radioCrcCount  = 0;  // hardware CRC rejected it
 static uint32_t radioErrCount  = 0;  // readData failed for some other reason
 static uint32_t dropTagCount   = 0;  // first byte is not a format we speak
 static uint32_t dropLenCount   = 0;  // our tag, wrong length
+static uint32_t dropForeignTxId = 0; // our tag, another shaft's car - see handleFrame()
 static uint32_t publishCount   = 0;
 static uint32_t publishFails   = 0;
 
@@ -280,6 +300,24 @@ static void handleFrame(const uint8_t *buf, size_t len) {
     return;
   }
 
+  // Spec 3: three cars share the band, separated by 2 MHz. With that much
+  // separation this counter should read 0 forever, and that is the point - a
+  // non-zero value is unambiguous evidence of cross-shaft leakage rather than
+  // an inference from a loss statistic. It is the pass condition for the bench
+  // coexistence test (spec 7.2), where all three systems sit on one table.
+  //
+  // A length-1 frame carries a valid tag and no txId byte to read. It is not
+  // evidence of another shaft, so it falls through to the unpackers and is
+  // counted as the length error it is, keeping this counter meaning one thing.
+  if (len > ELEV_OFF_TXID && buf[ELEV_OFF_TXID] != ELEV_TX_ID) {
+    dropForeignTxId++;
+    Serial.printf("[bridge] foreign txId 0x%02X (%u bytes, RSSI=%.1f dBm) - "
+                  "this bridge is elevator '%c' - not forwarded\n",
+                  (unsigned)buf[ELEV_OFF_TXID], (unsigned)len,
+                  (double)loraLastRssi(), (char)ELEV_TX_ID);
+    return;
+  }
+
   digitalWrite(LED_BUILTIN, LOW);   // XIAO LED is active low
   if (buf[0] == ELEV_TAG_STATE) {
     handleState(buf, len, nowMs);
@@ -311,7 +349,7 @@ static void printSummary() {
 
   Serial.printf("[bridge] --- heard=%lu | STATE good=%lu lost=%lu (%.1f%%) "
                 "| STATS good=%lu lost=%lu (%.1f%%) "
-                "| dropped: crc=%lu radio=%lu tag=%lu len=%lu "
+                "| dropped: crc=%lu radio=%lu tag=%lu len=%lu txid=%lu "
                 "| dup=%lu resync=%lu | published=%lu failed=%lu | up %s",
                 (unsigned long)heardCount,
                 (unsigned long)stateSeq.good, (unsigned long)stateSeq.lost,
@@ -320,6 +358,7 @@ static void printSummary() {
                 (double)streamLossPercent(statsSeq),
                 (unsigned long)radioCrcCount, (unsigned long)radioErrCount,
                 (unsigned long)dropTagCount, (unsigned long)dropLenCount,
+                (unsigned long)dropForeignTxId,
                 (unsigned long)(stateSeq.dups + statsSeq.dups),
                 (unsigned long)(stateSeq.resyncs + statsSeq.resyncs),
                 (unsigned long)publishCount, (unsigned long)publishFails,
@@ -369,6 +408,16 @@ void setup() {
   // while the SX1262 bring-up is still driving SPI is a needless overlap of
   // two peripherals' power-on transients on one 3V3 rail.
   meshBringUp(MESH_ROLE_ORIGIN, onMeshFrame, "BRIDGE");
+
+  // Identity first, and on its own line. A mis-flashed bridge is otherwise
+  // indistinguishable from a dead one - it hears nothing, because everything
+  // it hears is another shaft's. Frequency and channel are printed with it so
+  // that one glance at a console settles which image this board is carrying.
+  // txId goes out as a character as well as hex because it is ASCII on the
+  // wire (spec 3) and a stairwell hex dump reads `E0 42` as elevator B.
+  Serial.printf("[bridge] elevator '%c' (txId 0x%02X): LoRa %.1f MHz, mesh ch%d\n",
+                (char)ELEV_TX_ID, (unsigned)ELEV_TX_ID, (double)LORA_FREQUENCY,
+                (int)MESH_CHANNEL);
 
   Serial.printf("[bridge] listening: SF%d BW%.1f kHz CR4/%d @ %.1f MHz "
                 "-> ESP-NOW ch%d hop%d\n",

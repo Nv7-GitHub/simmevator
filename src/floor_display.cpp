@@ -90,6 +90,14 @@ static uint8_t  gDirection  = ELEV_DIR_IDLE;
 static float    gBatteryVolts = 0.0f;
 static float    gPitchM       = 0.0f;
 
+// The two STATS fields the commissioning readout is built from (spec 4.3).
+// Both were unpacked and thrown away before this change. gModelFloorsValid is
+// what keeps the readout quiet for the first minute after boot, when there has
+// been no heartbeat to compare FLOOR_LABEL_COUNT against.
+static uint8_t  gModelFloors      = 0;
+static bool     gModelFloorsValid = false;
+static bool     gNvsRestored      = false;
+
 // The odometer, as a fixed baseline from the last heartbeat plus whatever this
 // node has watched happen since. See accrueDistance().
 static float    gDist24hBaseM     = 0.0f;
@@ -192,6 +200,14 @@ static void applyStats(const uint8_t *pkt, size_t len) {
                                                : DISPLAY_BATTERY_OK;
   gPitchM       = elevStatsPitchM(&s);
 
+  // nFloors is the span of learned floor indices, not a count of landings
+  // visited (floor_monitor.h:530). Compared against the label table it is the
+  // only thing in the system that can catch a model that is internally
+  // consistent and one floor too low - see displayCommissionState().
+  gModelFloors      = s.nFloors;
+  gModelFloorsValid = true;
+  gNvsRestored      = elevStatsNvsRestored(&s);
+
   // The transmitter's figure lands as-is and whatever this node extrapolated
   // since the last heartbeat is discarded, not added to it.
   gDist24hBaseM     = (float)s.dist24hM;
@@ -273,6 +289,16 @@ static DisplayUiState buildUiState(uint32_t now) {
   s.moving        = gMoving;
   s.direction     = gDirection;
 
+  // modelReady is carried in its own field rather than read back out of
+  // positionValid: the renderer treats positionValid as permission to animate
+  // and is free to change that rule, while this one feeds spec 4.3's truth
+  // table, where the difference between "not ready" and "ready" is the
+  // difference between LEARNING and CHECK SHAFT.
+  s.modelReady       = gModelReady;
+  s.modelFloors      = gModelFloors;
+  s.modelFloorsValid = gModelFloorsValid;
+  s.nvsRestored      = gNvsRestored;
+
   // Battery and the odometer both come from STATS, so they are legitimately
   // absent for the first minute after boot and draw as "--" until then.
   s.batteryValid = gHaveStats;
@@ -316,8 +342,15 @@ static void reportSummary(uint32_t now) {
   meshPrintCounters();
 
   const DisplayUiState s = buildUiState(now);
-  Serial.printf("[ui] floor %s  pos %.2f%s  %s  %.2f mi (%lu floors since the "
-                "last heartbeat)  %s%s  bad frames %lu  backlight %u\n",
+  // The commissioning verdict goes in the summary as well as on the glass. It
+  // is unreadable from a console during an actual commissioning run (spec 4.2),
+  // but this is the line somebody reads on a bench when a screen is showing
+  // something they did not expect.
+  static const char *const kCommission[] = { "ok", "LEARNING", "ANCHORING",
+                                             "CHECK SHAFT" };
+  Serial.printf("[ui] %s  floor %s  pos %.2f%s  %s  %.2f mi (%lu floors since "
+                "the last heartbeat)  %s%s  bad frames %lu  backlight %u\n",
+                kCommission[displayCommissionState(s, displayFloorLabelCount())],
                 displayFloorLabel(s.floorIndex), (double)s.position,
                 s.positionValid ? "" : " (stale model)",
                 s.moving ? (s.direction == ELEV_DIR_UP ? "moving up"
@@ -346,12 +379,30 @@ void setup() {
   }
   displaySplash("Simmevator", "waiting for the mesh");
 
-  // A label table that is one entry short shows up in the field as a display
-  // that is silently wrong at the top of the building and right everywhere
-  // else, so print the ends of it where somebody will see them.
-  Serial.printf("[ui] %u floor labels, \"%s\" through \"%s\"\n",
+  // Which shaft this image is for, and the label table it carries.
+  //
+  // Identity is a build flag and there is no runtime elevator selection (spec
+  // 8), so a board flashed with the wrong shaft's image is otherwise invisible
+  // until its model goes ready and every screen in the shaft reads CHECK SHAFT
+  // - which can be hours after whoever flashed it walked away. A label table
+  // that is one entry short has the same shape of failure: silently wrong at
+  // the top of the building and right everywhere else. Both are printed here,
+  // where a bench console sees them at boot.
+#ifdef ELEV_TX_ID
+  Serial.printf("[ui] elevator '%c': %u floor labels, \"%s\" through \"%s\"\n",
+                (char)ELEV_TX_ID, (unsigned)displayFloorLabelCount(),
+                displayFloorLabel(1),
+                displayFloorLabel(displayFloorLabelCount()));
+#else
+  // No ELEV_TX_ID in this build's flags, so the label table is the only thing
+  // that identifies the shaft. Printed the same way rather than guessing a
+  // letter from the table, because a guess would be wrong for the two shafts
+  // that share a table.
+  Serial.printf("[ui] %u floor labels, \"%s\" through \"%s\" "
+                "(no ELEV_TX_ID in this build)\n",
                 (unsigned)displayFloorLabelCount(), displayFloorLabel(1),
                 displayFloorLabel(displayFloorLabelCount()));
+#endif
 
   // MESH_ROLE_RELAY: this node floods like every other, but may not mint an
   // origSeq. Two nodes minting into the same u16 space would collide, and the

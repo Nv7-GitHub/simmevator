@@ -81,10 +81,15 @@
 #define STATS_INTERVAL_MS 60000
 #endif
 
-// Which transmitter this is. One car, so one identity; the field exists so a
-// second shaft does not need a second protocol.
+// Which shaft this transmitter belongs to: ASCII 'A', 'B' or 'C', so a hex
+// dump of a capture reads E0 42 and names the car without a lookup table
+// (spec 3). There is deliberately no default. Three cars sharing one id would
+// let each bridge's txId filter (spec 5.2) accept every shaft's packets, and
+// the symptom would be a display showing another shaft's floor - plausible,
+// silent, and indistinguishable from a bad model. A build error here costs a
+// minute; that failure costs a commissioning trip.
 #ifndef ELEV_TX_ID
-#define ELEV_TX_ID 1
+#error "ELEV_TX_ID is not set - build one of elevator_tx_a/_b/_c, which pull it from [elev_a]/[elev_b]/[elev_c] in platformio.ini (spec 5.1)"
 #endif
 
 // Re-attempt sensor bring-up this often while it is missing, matching
@@ -602,9 +607,15 @@ void setup() {
 
   uint16_t mv = batteryReadMv();
   const BatteryLevel level = batteryLevelUpdate(mv);
-  Serial.printf("[tx] txId=%d  probe %d ms / algorithm %d ms / STATE %d ms "
-                "(+%d ms hold) / STATS %d ms  battery %u mV%s\n",
-                ELEV_TX_ID, STILLNESS_PROBE_INTERVAL_MS, FLOOR_SAMPLE_INTERVAL_MS,
+  // txId as a character and the frequency beside it: these two are the whole
+  // per-elevator identity of this image (spec 2), and a mis-flashed car is
+  // otherwise invisible until someone notices a display naming the wrong
+  // shaft. The numeric form stays because the wire carries a byte.
+  Serial.printf("[tx] txId='%c' (0x%02X) @ %.1f MHz  probe %d ms / algorithm "
+                "%d ms / STATE %d ms (+%d ms hold) / STATS %d ms  "
+                "battery %u mV%s\n",
+                (char)ELEV_TX_ID, (unsigned)ELEV_TX_ID, (double)LORA_FREQUENCY,
+                STILLNESS_PROBE_INTERVAL_MS, FLOOR_SAMPLE_INTERVAL_MS,
                 STATE_INTERVAL_MS, STATE_HOLD_AFTER_STOP_MS, STATS_INTERVAL_MS,
                 mv, level != BATTERY_OK ? " LOW" : "");
 
