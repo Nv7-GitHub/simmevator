@@ -227,7 +227,7 @@ describes that flag as existing for.
 
 | `nFloors` | `MODEL_READY` | `NVS_RESTORED` | screen |
 |---|---|---|---|
-| `< labelCount` | 0 | 0 | **LEARNING** - big digits show `nFloors`, `OF 11` beneath |
+| `< labelCount` | 0 | 0 | **LEARNING** - big digits show `nFloors`, the word `LEARNING` and `OF 11` beneath |
 | `== labelCount` | 0 | 1 | **ANCHORING** - words, not digits: ride to both ends |
 | `== labelCount` | 1 | - | normal operation |
 | `!= labelCount` | 1 | - | **CHECK SHAFT** - the off-by-one trap |
@@ -264,6 +264,13 @@ documentation must state plainly, because the obvious reading is wrong:
   not tick 3, 4, 5.
 - **It is only meaningful once pitch is established**, which needs ordinary
   multi-stop traffic rather than one long run.
+- **It must not be shown as a bare number.** The learned span of a shaft being
+  commissioned runs 2..11, which is exactly the range of real floor labels, and
+  it is drawn in the same seven-segment glyphs the floor number uses. Without
+  the word `LEARNING` at a size that survives corridor distance, a passer-by
+  reads the count as the floor the car is on. The `OF 11` caption does not
+  carry that on its own - it is the first thing to stop resolving as you walk
+  away.
 
 So the commissioning instruction is *"let the car run normally for a while, then
 check that every screen in the shaft shows a floor rather than CHECK SHAFT"* -

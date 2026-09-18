@@ -138,23 +138,34 @@ have eleven landings and therefore the identical label table, `B,1..10`, and
 `FLOOR_LABEL_COUNT` 11. A panel running `floor_display_a` and a panel running
 `floor_display_c` boot to the same layout, the same glyphs and the same startup
 screen. They differ in one number that never appears on the panel: the mesh
-channel, 6 versus 11. Install the wrong one of those two and it hears nothing -
-`heard` stays at 0, the screen shows `--` forever - which is the same symptom
-as a dead bridge, a flat car pack, or a panel simply out of mesh range. The one
-board that is actually wrong is the one board that looks blameless.
+channel, 6 versus 11. Channels 1, 6 and 11 are the non-overlapping set, so a
+panel on the wrong one of them does not hear its landing's bridge weakly - it
+does not hear it at all. `heard` stays at 0, nothing is ever handed to
+`displayUpdate()` (`floor_display.cpp` draws only `if (gSeenAnyFrame)`), and the
+panel sits on the boot splash - "Simmevator" over "waiting for the mesh" -
+indefinitely. That is the same symptom as a dead bridge, a flat car pack, or a
+panel simply out of mesh range. The one board that is actually wrong is the one
+board that looks blameless.
 
-**CHECK SHAFT (section 12) does not catch this case.** That check compares the
-transmitter's floor count against `FLOOR_LABEL_COUNT`, and A and C both say 11.
-B is the easy one in both directions - its ten-entry table disagrees with the
-other two, so a label table crossed in `platformio.ini` surfaces immediately -
-but two images that differ only in a channel number have no software backstop at
-all. Ink is the backstop.
+Note what a mis-flashed panel does **not** do. It does not show a wrong floor,
+because it decodes nothing. It does not show `--`, because `--` is a fully drawn
+screen with no confirmed floor, and a drawn screen means frames are arriving
+(section 12.2). And it does not show CHECK SHAFT, because that verdict is
+derived from a STATS field it never receives.
 
-The second witness is the firmware itself: every one of the nine builds now
-prints its shaft in the startup banner (section 9). So the ink is checkable.
-Open the console, read the letter, compare. If they disagree, believe the banner
-and reflash - the banner is what the board will actually do. For a car node that
-means USB, which means the pack comes off first; see section 3.
+**CHECK SHAFT (section 12) cannot catch this case**, and not only for the reason
+above: the check compares the transmitter's floor count against
+`FLOOR_LABEL_COUNT`, and A and C both say 11. B is the easy one in both
+directions - its ten-entry table disagrees with the other two, so a label table
+crossed in `platformio.ini` surfaces immediately - but two images that differ
+only in a channel number have no software backstop at all. Ink is the backstop.
+
+The second witness is the firmware itself: every one of the nine builds names
+its shaft in the first few lines it prints (section 9 - on a car node that is
+the `[tx] txId=` line rather than the radio banner). So the ink is checkable.
+Open the console, read the letter, compare. If they disagree, believe the
+firmware and reflash - the firmware is what the board will actually do. For a
+car node that means USB, which means the pack comes off first; see section 3.
 
 ---
 
@@ -469,28 +480,34 @@ strings - the exact wording lives in `src/elevator_tx.cpp`, `src/bridge_rx.cpp`
 and `src/floor_display.cpp` and may be reworded without this document being
 wrong. Open the console at 115200 and look for these things.
 
-All nine builds now open with their shaft, so the first line of any console
-session is a check of the ink on the case (section 2.1). What each one is
-expected to say:
+All nine builds name their shaft within the first few lines of a boot, so a
+console session is a check of the ink on the case (section 2.1). Each role names
+only the radios it has, because `build_src_filter` in `platformio.ini` only
+compiles those: a car node builds no `espnow_mesh.cpp` and so prints no mesh
+channel, and a display builds no `lora_link.cpp` and so prints no frequency.
+What each one is expected to say:
 
-| Shaft | Banner says | Bridge mesh | Screens in the shaft |
+| Shaft | Car node | Bridge | Display |
 |---|---|---|---|
-| A | elevator `A`, LoRa 913.0 MHz | channel 6 | 11, labels `B,1..10` |
-| B | elevator `B`, LoRa 915.0 MHz | channel 1 | 10, labels `1..10` |
-| C | elevator `C`, LoRa 917.0 MHz | channel 11 | 11, labels `B,1..10` |
+| A | elevator `A`, LoRa 913.0 MHz | elevator `A`, LoRa 913.0 MHz, mesh ch6 | elevator `A`, 11 labels, `B` through `10`, mesh channel 6 |
+| B | elevator `B`, LoRa 915.0 MHz | elevator `B`, LoRa 915.0 MHz, mesh ch1 | elevator `B`, 10 labels, `1` through `10`, mesh channel 1 |
+| C | elevator `C`, LoRa 917.0 MHz | elevator `C`, LoRa 917.0 MHz, mesh ch11 | elevator `C`, 11 labels, `B` through `10`, mesh channel 11 |
 
 ### The transmitter
 
 A good boot prints, in order:
 
-1. **A radio banner.** `loraBringUp()` announces the role, the shaft and the
-   SX1262 settings it applied - including the frequency, and `txId` printed as a
-   character rather than a number, so a transmitter reads `A`, `B` or `C`
-   directly. It **halts with an explanation on Serial** if the radio
-   will not initialise, so a dead or unseated Wio-SX1262 shows up as a bring-up
-   failure line followed by nothing at all. A board that prints a failure and
-   stops is not a crashed board - it is the radio layer refusing to continue,
-   because every later call would fail identically.
+1. **A radio banner.** `loraBringUp()` announces the role name it was handed -
+   `ELEVATOR TX` - and the SX1262 settings it applied: frequency, bandwidth,
+   spreading factor, coding rate, sync word and power. It does **not** print the
+   shaft letter. `loraBringUp()` is handed a role string and can see the radio
+   config, nothing else, so the frequency is the only per-shaft value in it, and
+   913.0 versus 917.0 is a number you have to look up rather than a letter you
+   can compare with the ink. It **halts with an explanation on Serial** if the
+   radio will not initialise, so a dead or unseated Wio-SX1262 shows up as a
+   bring-up failure line followed by nothing at all. A board that prints a
+   failure and stops is not a crashed board - it is the radio layer refusing to
+   continue, because every later call would fail identically.
 2. **An I²C scan and sensor report.** `bmp390BringUp()` prints which addresses
    answered on `Wire1`, which one the driver attached to, and the chip
    revision. A missing or miswired BMP390 shows as a scan with nothing at 0x77
@@ -505,7 +522,15 @@ A good boot prints, in order:
    `nvsModelStatusIsFault()` set - bad magic, bad size, bad schema, bad CRC,
    open or write errors - means there was a record and it was unusable, which
    is worth a second look rather than a shrug.
-4. **A running stream** at the algorithm's 1 Hz cadence, carrying altitude, the
+4. **The identity line.** `setup()` in `src/elevator_tx.cpp` prints `ELEV_TX_ID`
+   as a character next to the frequency - `[tx] txId='A' (0x41) @ 913.0 MHz ...`
+   - followed by the four cadences and the battery reading. **This, not the radio
+   banner, is where a car node's shaft letter appears**, and it comes after the
+   NVS line rather than first, so read down before deciding a board is unlabelled
+   by the firmware. There is no mesh channel in it and there is no mesh channel
+   anywhere in a car node's output: `tx_base`'s `build_src_filter` omits
+   `espnow_mesh.cpp`, so the board has no mesh radio to name.
+5. **A running stream** at the algorithm's 1 Hz cadence, carrying altitude, the
    floor decision and the packet schedule.
 
 Failure signatures worth recognising:
@@ -516,7 +541,7 @@ Failure signatures worth recognising:
 | Scan finds no BMP390 at 0x77 or 0x76 | Sensor wiring on D4/D5, or a board strapped to the other address |
 | Everything boots, floor stays unavailable | Normal on a fresh unit. See section 11 |
 | Console completely silent, port healthy | The monitor is asserting DTR/RTS. See section 7 |
-| Banner letter disagrees with the ink on the case | Mis-flashed board. Believe the banner and reflash - do not re-ink the label, because the label is what the next person installing it will read |
+| Identity line's letter disagrees with the ink on the case | Mis-flashed board. Believe the firmware and reflash - do not re-ink the label, because the label is what the next person installing it will read |
 
 ### The bridge
 
@@ -537,9 +562,10 @@ LoRa link is down, not that the car is idle.
 
 Every packet the bridge accepts is from its own car: a frame whose `txId` is
 not this bridge's elevator is dropped before dispatch and counted in
-`dropForeignTxId`, which `printSummary()` prints alongside `dropTagCount` and
-`dropLenCount`. With 2 MHz between the shafts that counter should read 0
-forever, and that is the point - a non-zero value is evidence of cross-shaft
+`dropForeignTxId`, which `printSummary()` prints as the `txid=` entry in the
+`dropped:` group, alongside `tag=` and `len=`. With 2 MHz between the shafts
+that counter should read 0 forever, and that is the point - a non-zero value is
+evidence of cross-shaft
 leakage rather than an inference from a loss statistic. It is a bench
 instrument, though, not a field one; section 13 says why.
 
@@ -549,14 +575,18 @@ that whole structure on one line.
 
 | What you see | What it means |
 |---|---|
-| Banner right, `dropForeignTxId` climbing | Another shaft's car is on this frequency - two transmitters flashed for the same shaft, or a frequency flag that did not take. Section 10 |
-| Banner right, nothing heard at all for minutes | The link is down, as it always was - but check the car node's banner letter before the radio, because a transmitter flashed for another shaft is talking on a frequency this bridge never listens to |
-| `foreignOrigins` non-zero | A second bridge is minting frames on this channel. Two bridges flashed for the same shaft; their `origSeq` values collide and get deduped against each other |
+| Banner right, `txid=` climbing | Exactly one thing moves that counter: a well-formed packet arrived **on this bridge's own frequency** carrying another shaft's `txId`. That is cross-shaft leakage across the 2 MHz separation, and each one also prints its own `foreign txId` line with the RSSI, so you can see how strong it was. It is *not* two transmitters flashed for the same shaft - those share both the frequency and the `txId`, so their packets are accepted and dispatched rather than counted here - and it is not a frequency flag that did not take, because a missing `LORA_FREQUENCY` is now a compile error (`src/lora_link.h`) rather than a silent default. Section 13 |
+| Banner right, nothing heard at all for minutes | The link is down, as it always was - but check the car node's `[tx] txId=` line before the radio, because a transmitter flashed for another shaft is talking on a frequency this bridge never listens to |
+| `foreignOrigins` present at all | `printSummary()` prints that field only once it is non-zero, so seeing it in the summary line *is* the fault - there is no zero to read. A second bridge is minting frames on this channel. Two bridges flashed for the same shaft; their `origSeq` values collide and get deduped against each other |
 
 ### A display
 
-Expect the mesh banner - which names the elevator this build is for - then
-counters. The useful fields, all defined in `espnow_mesh.h`:
+A display opens with `[ui] elevator '<x>'`, its label count and the first and
+last label, then `meshBringUp()` prints the mesh banner with the channel. There
+is no LoRa line and no frequency anywhere in a display's output - the environment
+builds no `lora_link.cpp` - so the letter and the channel are the whole identity
+check here. Then counters; the useful fields are all defined in
+`espnow_mesh.h`:
 
 | Counter | Reading it |
 |---|---|
@@ -567,10 +597,16 @@ counters. The useful fields, all defined in `espnow_mesh.h`:
 | `dropCrc`, `dropMagic`, `dropVersion` | Non-zero suggests interference or a node running a different build |
 | `dropHopExhausted` | Frames that ran out of their 8 hops here. A few is fine; a lot means the flood is looping further than it should |
 
-The panel itself is the other half of the check. Backlight up and a rendered
-layout means TFT_eSPI is configured and the SPI bus works. A dash in the big
-digit position rather than a number means "nothing heard since boot", and is
-expected for up to one STATS interval on a cold start.
+The panel itself is the other half of the check, and the two things it can show
+before a floor mean different things. Backlight up and a legible **splash** -
+"Simmevator" over "waiting for the mesh" - means TFT_eSPI is configured and the
+SPI bus works, and that **nothing has been heard since boot**: `loop()` calls
+`displayUpdate()` only `if (gSeenAnyFrame)`, so what `setup()` put on the glass
+stays there until a mesh frame lands. A **dash** in the big digit position is a
+fully drawn UI, which means frames *are* arriving and no floor is confirmed yet;
+that is expected for up to one STATS interval on a cold start. A splash that
+never clears is a radio problem - range, the bridge, or the wrong shaft's image
+(section 2.1). A dash that never clears is a car problem (section 11).
 
 A screen reading LEARNING, ANCHORING or CHECK SHAFT is not a display fault
 either - those are the commissioning readout, and section 12 is entirely about
@@ -656,13 +692,43 @@ flags are the whole difference, so a configuration that is right cannot produce
 an image that is wrong.
 
 Belt and braces after a full `pio run`, since three identical images is the
-symptom being hunted:
+symptom being hunted - but **not with checksums.** ESP32 images are not
+reproducible: rebuilding `floor_display_a` from clean moved its `firmware.bin`
+md5 from `70dd417e...` to `40f18e2f...` with no configuration change at all. So
+three differing checksums are what you get whether the matrix collapsed or not,
+and the test has no failing case. Two checks do work.
+
+The macros the compiler actually received, per environment:
 
 ```bash
-md5 -q .pio/build/floor_display_{a,b,c}/firmware.bin   # md5sum on Linux
+for e in elevator_tx_{a,b,c} bridge_rx_{a,b,c} floor_display_{a,b,c}; do
+  printf '%-17s' "$e"
+  pio run -e "$e" -t idedata 2>/dev/null | tr ',' '\n' \
+    | grep -oE '(LORA_FREQUENCY|MESH_CHANNEL|ELEV_TX_ID|FLOOR_LABEL_COUNT)=[^"]+' \
+    | tr '\n' ' '
+  echo
+done
 ```
 
-Three different checksums. Two that match means two shafts built the same image.
+Same nine rows and the same three distinct sets of values as above, read one
+step further down the toolchain: `pio project config` reports what the `.ini`
+resolves to, `idedata` reports what was handed to the preprocessor.
+
+Or read the label table straight out of a built image, which is the only one of
+these that touches the artefact you are about to flash:
+
+```bash
+for e in floor_display_{a,b,c}; do
+  printf '%-17s' "$e"
+  strings .pio/build/$e/firmware.elf | grep -m1 -E '^(B,)?1,2,3'
+done
+```
+
+`B,1,2,3,4,5,6,7,8,9,10` for A and C, `1,2,3,4,5,6,7,8,9,10` for B. That catches
+a display environment that lost its label flags or picked up B's - the collapse
+that reaches the glass. It cannot separate A from C: they share a table, and the
+mesh channel that does separate them is a compiled-in integer with no string in
+the image. For A versus C, use `idedata`.
 
 ### The replay
 
@@ -719,8 +785,9 @@ agree exactly. `docs/ALGORITHM_PORT.md` §6 is the long version.
 ## 11. First run: the five minutes someone will panic in
 
 A freshly flashed transmitter with empty NVS **does not report a floor.** It
-reports `floor = 0`, "model not ready", and the displays show a dash until the
-first STATS packet arrives and then switch to LEARNING (section 12).
+reports `floor = 0` and "model not ready". Its displays sit on the boot splash
+until the first mesh frame reaches them, then show a dash until the first STATS
+packet arrives, and then switch to LEARNING (section 12).
 
 This is correct behaviour and it is measured, not defensive. `ALGORITHM.md` §8:
 every stop in the reference capture that landed more than a metre off its rail
@@ -739,13 +806,12 @@ So, the sequence someone should expect on a brand-new install:
 
 | When | What you see |
 |---|---|
-| Minute 0 | Boot lines, NVS reports empty, screens show `--` - nothing has been heard yet |
-| Within one STATS interval, so within a minute | The screens switch to **LEARNING**, a count in the big digits over `OF 11` (`OF 10` in B). This is the system working, not failing |
+| Minute 0 | Boot lines, NVS reports empty, screens still on the splash, "waiting for the mesh" - nothing has been heard yet. They drop the splash for a dash on the first frame that arrives |
+| Within one STATS interval, so within a minute | The screens switch to **LEARNING**: a count in the big digits, the word `LEARNING` under it, then `OF 11` (`OF 10` in B). This is the system working, not failing |
 | Minute 2 | Still LEARNING, and the count is sitting still or has jumped several floors at once. **This is the moment people conclude it is broken.** It is not, and section 12 explains why the count is a span rather than a progress bar |
 | ~Minute 5, given normal traffic | Pitch and floor count settle, the model goes ready, screens start showing numbers and they stay right |
 | Every reboot after that | Screens show **ANCHORING** until the car has visited **the bottom landing and the top landing**, in either order. Then the floor appears and is right. No second bootstrap |
-| Any time, on one screen | **CHECK SHAFT** - that panel is carrying the wrong shaft's label table. Section 12 |
-| Any time, on every screen in a shaft | **CHECK SHAFT** - the car has never been to its lowest landing. In A and C that is the basement. Section 12 |
+| Any time, and always on every screen in the shaft at once | **CHECK SHAFT** - the car has never been to its lowest landing. In A and C that is the basement. Section 12.3 |
 
 A battery swap, a reset, a reflash of unrelated code - none of them cost you
 another five-minute bootstrap, because the learned pitch and height ladder come
@@ -795,32 +861,50 @@ is why the verdict is rendered on them.
 
 ### 12.2 The four states
 
-All four are derived from fields the wire already carries - the floor count and
-the NVS-restored flag out of STATS, the model-ready bit out of STATE - so there
-is no new packet, no new flag and nothing to enable.
+All four are derived from fields the wire already carries - floor count,
+model-ready and the NVS-restored flag, all three out of STATS - so there is no
+new packet, no new flag and nothing to enable. All three come from the same 60 s
+heartbeat on purpose: taking model-ready from STATE instead would drop it
+whenever a parked shaft stops sending STATE, and put a healthy parked shaft into
+ANCHORING after any display reset (`buildUiState()` in `src/floor_display.cpp`).
 
 | Screen | What it means | What to do |
 |---|---|---|
-| `--` | Nothing heard since boot. Not a commissioning state at all | Wait one STATS interval (60 s). Still `--` after that, see section 9 |
-| **LEARNING**, count in the big digits with `OF 11` beneath (`OF 10` in B) | The model is not ready and the span learned so far is smaller than the building | Nothing. Let the car run. Read 12.4 before watching the number |
+| The boot splash, "waiting for the mesh" | Not one frame heard since boot, so `displayUpdate()` has never been called. Not a commissioning state at all - it is what `setup()` drew | The mesh, not the car: range, the bridge, or the wrong shaft's image (sections 2.1 and 9) |
+| `--` | Frames are arriving and no floor is confirmed yet | Wait one STATS interval (60 s). Still `--` after that, see section 9 |
+| **LEARNING**, count in the big digits over the word `LEARNING` and `OF 11` (`OF 10` in B) | The model is not ready and the span learned so far is smaller than the building | Nothing. Let the car run. Read 12.4 before watching the number |
 | **ANCHORING**, in words rather than digits | The model came back from NVS intact, but the node does not yet know where the car is | Ride to both ends, in either order. Section 12.5 |
 | A floor label | Normal operation | Nothing |
 | **CHECK SHAFT** | The model is ready and confident, and reports a floor count this building does not have | Section 12.3 |
 
-### 12.3 CHECK SHAFT means one of exactly two things
+### 12.3 CHECK SHAFT has exactly one cause
 
-Either **the car has never visited its lowest landing**, or **this display is
-carrying the wrong shaft's label table.**
+**The car has never visited its lowest landing.** That is the whole list, and it
+is always the whole shaft at once. Both inputs to the verdict are shaft-wide:
+`FLOOR_LABEL_COUNT` comes from `[elev_a]` / `[elev_b]` / `[elev_c]`, so every
+display in a shaft carries the same one, and `nFloors` arrives in STATS from the
+one bridge they all listen to. `displayCommissionState()` (`src/display_ui.h`)
+compares those two and nothing else, so it returns the same answer on all eleven
+screens.
 
-Tell them apart by counting screens. Every screen in the shaft showing it points
-at the car: send the car to the basement, and to the top, and the learned span
-grows to eleven and the screens leave CHECK SHAFT by themselves. One screen out
-of eleven showing it points at that board: reflash it with its own shaft's
-environment (sections 2 and 2.1) - there is nothing wrong with the car.
+So do not try to tell causes apart by counting screens - there is nothing to
+count. Send the car to the basement and to the top, in either order (12.5); the
+learned span grows to eleven and the screens leave CHECK SHAFT by themselves.
 
-The first case is worth being precise about, because it is the reason this
-state exists at all. `floor` index 1 is defined as *the lowest landing ever
-seen*, not as a name, and the model is learned at runtime from confirmed stops.
+A mis-flashed display is what the counting instinct is reaching for, and it
+looks nothing like this. A panel carrying the neighbouring shaft's image is on
+the wrong mesh channel and is simply deaf: it stays on the boot splash and
+renders no UI at all (section 2.1). It cannot show CHECK SHAFT, because CHECK
+SHAFT is derived from a STATS field it never receives - so "one screen out of
+eleven showing CHECK SHAFT" is not a state this system can reach. A screen still
+reading "waiting for the mesh" while its neighbours show floors is the
+mis-flashed board, and the fix is to reflash it with its own shaft's environment
+(sections 2 and 2.1).
+
+The one cause that does exist is worth being precise about, because it is the
+reason this state exists at all. `floor` index 1 is defined as *the lowest
+landing ever seen*, not as a name, and the model is learned at runtime from
+confirmed stops.
 Commission elevator A over a period in which nobody presses B, and it learns a
 span of ten landings, sets `modelReady`, and starts broadcasting confident
 indices 1-10 - which the display maps onto the labels `B,1,2,...,9`. **Every
@@ -874,41 +958,83 @@ future failure gets blamed on.
 3. In A and C, make sure the car has actually been to the basement and to the
    top at least once, in either order. Nobody may press B for hours; do it
    deliberately rather than waiting for a passenger to.
-4. Walk the shaft. Every screen showing a floor label means done. Any screen
-   showing CHECK SHAFT means section 12.3.
+4. Walk the shaft. Every screen showing a floor label means done. CHECK SHAFT -
+   which will be on all of them, or none - means step 3 did not happen; see
+   section 12.3. A screen still on the splash while its neighbours show floors
+   is that one board, not the car; see section 2.1.
 
 ---
 
 ## 13. The bench coexistence test
 
 Do this before any of it goes into the building: all three transmitters and all
-three bridges powered on one table, within a metre of each other, at full
-22 dBm.
+three bridges powered at once, at full 22 dBm, with **at least 1 m between any
+transmitter antenna and any bridge antenna.**
 
-That geometry is deliberately worse than the building can produce. In the
-building the shafts are far apart and each bridge hears its own car far more
-strongly than it hears the other two. On one table all three cars are
-equidistant from all three bridges, so the near-far margin that frequency
-separation is meant to provide is removed on purpose. Passing here means the
-separation itself is doing the work, not the floor plan.
+### That metre is a minimum, and it is a hardware limit
+
+Not a bench size, not a target - a floor. The SX1262's absolute maximum RF input
+is around **+10 dBm** (`docs/HARDWARE.md` §3.1, and the note beside
+`LORA_TX_POWER=22` in `platformio.ini`), and the transmitter puts out 22 dBm. On
+a bench the only thing between those two numbers is path loss, and at 915 MHz
+free space gives:
+
+| separation | at the receiver |
+|---|---|
+| 0.10 m | +10.3 dBm - **over the absolute maximum** |
+| 0.25 m | +2.4 dBm |
+| 0.50 m | -3.6 dBm |
+| 1.00 m | -9.7 dBm - about 20 dB of margin |
+
+The crossover is 0.104 m. Six boards crowded onto one table sit 5-10 cm apart,
+which is the wrong side of it. What that costs is not a failed test: it is a
+damaged receiver front end that afterwards under-performs quietly rather than
+failing outright - a bridge that passes here and then loses packets in the shaft
+for a reason nobody can find, on a board whose firmware and configuration both
+check out. Spread the six across the bench or across two benches, and keep the
+antennas apart rather than the enclosures. Further is always better; there is no
+upper bound to respect here.
+
+### What the geometry proves, and what it does not
+
+Equidistant boards are a near-far ratio of zero by definition, so this is not
+the worst near-far case the building can produce - it is not a near-far test at
+all. What it does test is **adjacent-channel rejection with the interferer at
+equal power to the wanted signal**, and that is a genuine stress case: in the
+building a foreign car is normally far weaker than a bridge's own, so a pass
+here means the 2 MHz separation is rejecting an interferer on equal terms, which
+is harder than the building normally asks.
+
+The real worst case is the opposite arrangement - a foreign car close to a
+bridge whose own car is ten floors up the shaft - and the bench cannot reproduce
+it. Reproducing it means holding the foreign transmitter at the 1 m minimum
+while the wanted one sits tens of metres away, which is a building-sized test,
+not a bench one. For that case the argument is the frequency separation itself,
+plus the fact that a filtered foreign packet degrades to silence rather than to
+a wrong floor (13.1) - not this test.
 
 All six XIAOs run from USB here, with the packs off - which is what makes every
 console in the system legal at once, and is the reverse of the situation in
 section 12.1. No displays are needed; nothing being tested lives past the
 bridge.
 
-Budget time for it. Six boards sitting on a table are six *parked* cars, so the
+Budget time for it. Six boards sitting on a bench are six *parked* cars, so the
 traffic is the STATS heartbeat alone, one packet per car per minute. Half an
 hour gives each bridge about thirty packets to count, which is enough to
 compare against a baseline; three packets is not.
 
 Pass conditions, all read from the bridge consoles:
 
-- each bridge's `publishCount` advances at **its own** car's cadence, and only
-  its own - one a minute parked, every 2 s from a car that is actually moving
-  (section 9)
-- each bridge's `dropForeignTxId` stays at 0
-- each bridge's `foreignOrigins` stays at 0
+- `published=` in each bridge's own `[bridge] ---` summary advances at **its
+  own** car's cadence, and only its own - one a minute parked, every 2 s from a
+  car that is actually moving (section 9)
+- each bridge's `txid=` entry in `dropped:` stays at 0, and no `foreign txId`
+  line is ever printed
+- **no `foreignOrigins` field appears in the summary line at all.** There is no
+  zero to read here: `printSummary()` wraps it in `if (foreignOrigins)`
+  (`src/bridge_rx.cpp`), so the field exists in the output only once it has
+  something to report. The pass condition is its absence, and anyone told to
+  "check it reads 0" will be hunting for a string that is never printed
 - no bridge's loss statistics degrade when the other two are powered versus when
   they are not
 

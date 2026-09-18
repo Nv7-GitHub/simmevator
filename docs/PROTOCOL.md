@@ -160,8 +160,12 @@ What a step costs in current, at the 2026-09-11 spec §2.2 duty cycles and
 | STATS 24 -> 25 bytes, every 60 s | +0.15 mA |
 
 Sanity check on the same arithmetic against the spec's own line items:
-`297 ms / 2 s x 140 mA x 0.712 = 14.8 mA` and `494 ms / 60 s x 140 mA = 1.15 mA`,
-which is the 15 mA and 1.2 mA in the 2026-09-11 spec §2.2.
+`297 ms / 2 s x 140 mA x 0.90 = 18.7 mA` and `494 ms / 60 s x 140 mA = 1.15 mA`,
+which is the 18.7 mA and 1.2 mA in the 2026-09-11 spec §2.2. The 0.90 is the
+STATE-active fraction, not the 71.2% moving fraction - STATE is not gated on
+moving, it runs for `STATE_HOLD_AFTER_STOP_MS` = 10 s past every stop
+(2026-09-11 spec §2.2, which states 0.90 in bold). Use 0.90 for anything costed
+against this stream, here and in section 1.3.
 
 ### 1.2 Why neither LoRa format carries an application CRC
 
@@ -193,28 +197,36 @@ finding out during an evening peak.
 
 On one frequency, three cars are pure ALOHA. Nothing in this link listens before
 it transmits - there is no carrier sense anywhere in it. A STATE packet occupies
-297 ms (section 1.1) and goes out every 2 s while the car is active, so at the
-71.2% active duty the reference capture shows for an evening peak, each car
-offers
+297 ms (section 1.1) and goes out every 2 s while the stream is active, so at the
+0.90 STATE-active fraction of an evening peak, each car offers
 
 ```
-  0.5 x 0.712 = 0.356 packets/s
+  0.5 x 0.90 = 0.45 packets/s
 ```
+
+0.90, not the 71.2% moving fraction from the reference capture: STATE is not
+gated on moving, it keeps running for `STATE_HOLD_AFTER_STOP_MS` = 10 s past
+every stop (2026-09-11 spec §2.2 states the 0.90 in bold). It is the same figure
+the power budget in section 1.1 and the airtime bill in section 7 are costed at,
+so all three now agree.
 
 ALOHA's vulnerable window is two packet lengths, because a packet is destroyed
 by an interferer starting any time from one packet length before it to one
 packet length after it begins:
 
 ```
-  2 x 0.297 = 0.594 s
-
-  P(survive two interferers) = exp(-2 x 0.356 x 0.594) = 0.656
+  window   = 2 x 0.297             = 0.594 s
+  exponent = 2 x 0.45 x 0.594      = 0.5346
+  P(survive two interferers) = exp(-0.5346) = 0.586
 ```
 
-**About one STATE packet in three would be lost**, on top of the 5.21% batch
-loss the shaft already costs (`ALGORITHM.md` §9), and concentrated in exactly the
-evening peak when all three cars are busy at once. The displays' 180 s staleness
-timer absorbs the occasional hole; it is not sized for a third of the traffic.
+**About two STATE packets in five would be lost** - 41.4% - on top of the 5.21%
+batch loss the shaft already costs (`ALGORITHM.md` §9), and concentrated in
+exactly the evening peak when all three cars are busy at once. The displays'
+180 s staleness timer absorbs the occasional hole; it is not sized for two
+packets in five. (At the 0.712 moving fraction the same arithmetic gives
+`exp(-0.422928) = 0.655`, a 34.5% loss - the smaller, wrong number, quoted here
+only so nobody re-derives it and thinks it is the answer.)
 
 Hence 913.0 / 915.0 / 917.0 MHz. 2 MHz against a 125 kHz occupied bandwidth is
 roughly 16 channel widths, chosen against the near-far case - one shaft's
@@ -238,11 +250,17 @@ prevent.
 
 `txId` is still worth having, for a different reason: it turns "a foreign packet
 reached this bridge" from an inference off a loss statistic into a counted event,
-`dropForeignTxId` in the bridge's console summary. That is a bench instrument
-rather than a field one - the bridge console is a wall-powered box mid-shaft that
-nobody is standing at during normal operation - and with 2 MHz of separation it
-should read 0 forever. A non-zero value is the unambiguous evidence of
-cross-shaft leakage that a loss statistic can only hint at.
+`dropForeignTxId` in the bridge's console summary. It moves for exactly one
+cause: this bridge decoded, on its own frequency, a well-formed packet stamped
+with another shaft's `txId`. It is not a general mis-flash counter - two
+transmitters flashed for the same shaft would share both the frequency and the
+`txId`, so their packets are accepted here and counted nowhere, and a missing
+`LORA_FREQUENCY` is a compile error in `src/lora_link.h` rather than a board that
+gets onto the wrong frequency. That makes it a bench instrument rather than a
+field one - the bridge console is a wall-powered box mid-shaft that nobody is
+standing at during normal operation - and with 2 MHz of separation it should read
+0 forever. A non-zero value is the unambiguous evidence of cross-shaft leakage
+that a loss statistic can only hint at.
 
 The ESP-NOW side is separated the same way, channels 1, 6 and 11, one per shaft,
 but for an entirely different class of reason: `origSeq` collisions between three
@@ -341,7 +359,9 @@ fit:
             |    |    |
             |    |    +-- seq = 0x2A = 42
             |    +-- txId = 0x42 = 'B', so this is elevator B. A bridge
-            |         built for A or C drops the packet here and counts it.
+            |         built for A or C is 2 MHz away and normally never
+            |         decodes this at all; if one does, it drops the
+            |         packet here and counts it in dropForeignTxId.
             +-- tag = 0xE0, STATE
 ```
 
@@ -555,11 +575,22 @@ shaft's frames; the check would be true by construction on every frame it ever
 ran on. It would cost a `MESH_VERSION` bump, which section 7 explains is a hard
 cut that strands every node not reflashed the same day.
 
-The failure it looks like it would guard is real: a display flashed for the
-wrong shaft. That one is caught by the display comparing the `nFloors` in STATS
-(section 3) against its own `FLOOR_LABEL_COUNT` - data the wire already carries,
-so the check costs no wire surface and no version bump.
-`docs/FLASHING.md` has the commissioning procedure that reads it.
+The failure it looks like it would guard is a display flashed for the wrong
+shaft, and no wire field could catch that one, because no frame ever reaches
+that display to carry the field. `MESH_CHANNEL` is per shaft (6/1/11, the flood
+table below) and 1, 6 and 11 are non-overlapping, so a display flashed for the
+wrong shaft cannot hear its landing's bridge at all. It sits on the
+`displaySplash("Simmevator", "waiting for the mesh")` screen forever: it does not
+show a wrong floor, and it does not show `--`, which is the "frames heard, floor
+not confirmed" screen. The check that catches it is a human walking the stairwell
+during commissioning, which is what `docs/FLASHING.md` describes.
+
+The `nFloors`-against-`FLOOR_LABEL_COUNT` comparison in section 3 is a different
+check for a different fault. Every display in a shaft carries the same label
+table and hears the same bridge, so when it trips it trips on all ten or eleven
+screens at once, and what it means is that the car's learned `nFloors` disagrees
+with the shaft's label count - in practice a car that has never visited its
+lowest landing.
 
 ### Wrapping
 

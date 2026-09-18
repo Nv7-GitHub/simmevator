@@ -105,11 +105,12 @@ does not cut off everything above it.
 **Separate LoRa frequencies, because three cars on one frequency is pure ALOHA.**
 There is no carrier sense: a transmitter that is about to send has no idea another
 shaft's car is mid-packet. A STATE packet is 297 ms and goes out every 2 s while
-the car is active, so at the 71.2% active duty measured over an evening peak each
-car offers `0.5 x 0.712 = 0.356` packets per second. ALOHA's vulnerable window is
+the car is active. STATE is not gated on motion alone - it keeps running for 10 s
+past every stop - so the duty fraction is the 0.90 STATE-active figure, and each
+car offers `0.5 x 0.90 = 0.45` packets per second. ALOHA's vulnerable window is
 two packet lengths, `2 x 0.297 = 0.594 s`, so a given packet survives two
-interferers with probability `exp(-2 x 0.356 x 0.594) = 0.656` - about one STATE
-packet in three lost, on top of the 5.21% the shaft already costs
+interferers with probability `exp(-2 x 0.45 x 0.594) = 0.586` - about two STATE
+packets in five lost, on top of the 5.21% the shaft already costs
 (`ALGORITHM.md` §9), and concentrated in exactly the evening peak when all three
 cars are busy at once. So A, B and C sit on 913.0, 915.0 and 917.0 MHz: 2 MHz of
 separation against a 125 kHz occupied bandwidth, sized for a transmitter passing
@@ -212,17 +213,22 @@ a floor from twenty minutes ago.
 That is normal operation. There are three further states that appear only while a
 shaft is being commissioned or is misconfigured, all derived from fields the wire
 already carries: **LEARNING**, showing how many landings the car has spanned so far
-with `OF 11` beneath it; **ANCHORING**, asking for a ride to both ends of the shaft
+over the word `LEARNING` and `OF 11`; **ANCHORING**, asking for a ride to both ends of the shaft
 after the transmitter restored its model from NVS; and **CHECK SHAFT**, which means
 the car is confidently reporting a floor count this shaft does not have. The last
 one is the whole reason the others exist. An elevator A car commissioned over a
 period in which nobody presses B learns a span of ten landings, is internally
 consistent, sets its model ready, and would label every screen in the shaft one
 floor too low indefinitely - and it is the display, holding the only copy of how
-many landings the building has, that can catch it. A display flashed with the wrong
-shaft's label table shows the same thing. `docs/FLASHING.md` has the commissioning
-procedure. `--` is unchanged and still means only "this screen has heard nothing
-since boot".
+many landings the building has, that can catch it. That mismatch is CHECK SHAFT's
+only cause, and because every display in a shaft carries the same label table and
+hears the same bridge, it appears on all of them at once or on none. It does not
+catch a mis-flashed display: the mesh channels are 6, 1 and 11, which do not
+overlap, so a display flashed for the wrong shaft never hears its landing's bridge
+at all and sits on the splash screen forever. `docs/FLASHING.md` has the
+commissioning procedure. `--` means "this screen has heard frames but has no
+confirmed floor"; a screen that has heard nothing since boot still shows the
+splash.
 
 ---
 
@@ -254,8 +260,9 @@ pio test -e native                      # host unit tests
 
 Substitute `_a` or `_c` for the other two shafts. The suffix is the whole of an
 image's identity: it carries the LoRa frequency, the ESP-NOW channel, the `txId`
-and the floor label table, so a display built `_b` and hung in shaft A labels every
-floor one too low. There is no runtime elevator selection to correct it with.
+and the floor label table, so a display built `_b` and hung in shaft A is deaf on
+channel 1 while that landing's bridge floods channel 6, and never leaves its splash
+screen. There is no runtime elevator selection to correct it with.
 `docs/FLASHING.md` has the which-image-on-which-board table, the board labelling,
 and the commissioning check that catches exactly that mistake.
 

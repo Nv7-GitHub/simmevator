@@ -131,8 +131,8 @@ assuming.
 
 ## 3. The rules, and where each number lives
 
-All but one of these are in `[mesh_base]` in `platformio.ini`, which both
-`bridge_rx` and `floor_display` inherit in all three elevators - one edit, but
+All but one of these are in `[mesh_base]` in `platformio.ini`, which
+`bridge_rx_{a,b,c}` and `floor_display_{a,b,c}` all inherit - one edit, but
 thirty-five reflashes.
 
 The exception is `MESH_CHANNEL`, which is now a per-elevator value and lives in
@@ -427,10 +427,10 @@ ruling out first.
 ## 9. Tuning, in the order worth trying
 
 Nothing here changes without reflashing every board in the shaft - eleven in B,
-twelve in A and C. `[mesh_base]` is inherited by `bridge_rx` and
-`floor_display` in all three elevators, so an edit there is one line and
-thirty-five `pio run -t upload`s. `MESH_CHANNEL` is the one row below that can
-be changed for a single shaft (§11). A node flashed with a different
+twelve in A and C. `[mesh_base]` is inherited by `bridge_rx_{a,b,c}` and
+`floor_display_{a,b,c}`, so an edit there is one line and thirty-five
+`pio run -t upload`s. `MESH_CHANNEL` is the one row below that can be changed
+for a single shaft (§11). A node flashed with a different
 `MESH_CHANNEL` than the rest of its shaft is completely deaf to them and
 reports nothing unusual about itself.
 
@@ -457,14 +457,18 @@ Every display is a CYD on a USB-C supply. Unplug the supply, plug the board
 into the laptop, and it powers up on USB with the console on the same cable:
 
 ```
-pio device monitor -e floor_display          # 115200
+pio device monitor -e floor_display_a        # 115200; _b, _c for the others
 ```
 
 The bridge is a XIAO ESP32S3, same idea, USB-C on the native port:
 
 ```
-pio device monitor -e bridge_rx
+pio device monitor -e bridge_rx_a            # _b, _c for the others
 ```
+
+There is no `floor_display` or `bridge_rx` environment to monitor: identity is a
+build flag (§13), so every environment carries its shaft's letter and the
+unsuffixed names fail.
 
 `monitor_dtr = 0` and `monitor_rts = 0` are already set for both XIAO
 environments. Those lines are wired to the reset and boot0 logic on that port -
@@ -567,9 +571,14 @@ shaft.
 things, in order of likelihood:
 
 1. The bridge was flashed with a different `MESH_CHANNEL` than the displays, or
-   vice versa. Check the boot banner on both - it names the elevator, the
-   frequency and the channel the build is for, and with three elevators the
-   usual form of this mistake is a board built for the wrong one (§13.3).
+   vice versa. Check the boot banners against each other. The bridge's
+   `[bridge] elevator 'B' (txId 0x..): LoRa 915.0 MHz, mesh ch1`
+   (`bridge_rx.cpp`) names both radios because it has both. A display has no
+   LoRa radio and prints no frequency: its `[ui] elevator 'B': ...`
+   (`floor_display.cpp`) names the shaft and its label table, and the
+   `[mesh] channel N` line from `meshBringUp()` - which both node types print -
+   is where its channel appears. With three elevators the usual form of this
+   mistake is a board built for the wrong one (§13.3).
 2. The LR rate did not get set on the bridge - see §6. Symptom: the bridge
    transmits, the displays are on the right channel, and nobody hears anything.
 3. `meshBringUp()` failed. It halts with an explanation on Serial rather than
@@ -589,6 +598,13 @@ distinguishes the next.
 **1. Is it alive?** Console banner, screen lit. If there is no banner, it is a
 power or boot problem and nothing below applies. If the screen is on and the
 console silent, check the baud and the cable.
+
+Do not read the screen as evidence at this step. `floor_display.cpp` calls
+`displayUpdate()` only once a frame has arrived, so a board that has heard
+nothing since boot is still showing the `Simmevator / waiting for the mesh`
+splash. That is what every fault below looks like from the corridor, and it is
+also what a board looks like thirty seconds after a power cut. The counters,
+not the glass, separate them.
 
 **2. Is `heard` moving?**
 
@@ -709,12 +725,28 @@ console and nowhere else.
 **And that is the limit of it: `foreignOrigins` is a bench instrument, not a
 field instrument.** The bridge is a wall-powered box mid-shaft; reading its
 console means standing in front of it with a laptop, which is not a thing that
-happens during normal operation. It earns its place on the bench, with all
-three bridges powered within a metre of each other, where "`foreignOrigins`
-stays at 0 on all three" is a pass condition that the building itself could
-never produce as sharply. In the field the argument that the shafts do not
-interfere is the channel separation itself, and the instruments that are
-actually visible are the displays.
+happens during normal operation. It earns its place on the bench, with the three
+shafts' transmitters and bridges powered at once, where "no `foreignOrigins`
+field on any of the three summary lines" is a pass condition that is sharper
+than anything the building produces.
+
+Read that as an absence, not as a zero. `printSummary()` in `bridge_rx.cpp`
+wraps the field in `if (foreignOrigins)`, so a clean bridge prints no
+`foreignOrigins=` at all; somebody told to look for a 0 will hunt for a field
+that is never there and report the test as inconclusive.
+
+**Keep at least a metre between any transmitter and any bridge on that bench.**
+The transmitters run at 22 dBm and the SX1262's absolute maximum RF input is
+around +10 dBm (`platformio.ini` next to `LORA_TX_POWER=22`, tabulated in
+HARDWARE.md §3.1). Free space at 915 MHz puts +10.3 dBm into a receiver at
+0.10 m - over the absolute maximum, with the crossover at 0.104 m - against
+-9.7 dBm at 1.00 m, which is about 20 dB of margin. A bench laid out as "all
+six boards on one table" ends up with boards 5-10 cm apart, and what that
+damages is a bridge's front end, quietly, for later.
+
+In the field the argument that the shafts do not interfere is the channel
+separation itself, and the instruments that are actually visible are the
+displays.
 
 ---
 
@@ -820,9 +852,14 @@ a fact.
   assumed 5-hop path, with no airtime, no CSMA and no processing time in it.
 - **Whether the three shafts can hear each other at all.** §13 assumes they can
   and separates them so that the answer does not matter. Nobody has measured
-  cross-shaft audibility in this building, and the bench test that backs the
-  separation deliberately reproduces a harsher case than the building can - all
-  three bridges within a metre of each other at full power.
+  cross-shaft audibility in this building. The bench test that backs the
+  separation does not settle it either: with the boards spread evenly over one
+  bench the near-far ratio is zero by construction, so what it proves is
+  adjacent-channel rejection with the interferer at *equal* power to the wanted
+  signal. That is a real stress case - in the building a foreign car is
+  normally far weaker - but it is not the worst case. The worst case is a
+  foreign car close to a bridge whose own car is ten floors away, and a bench
+  cannot produce it.
 
 The LoRa leg, by contrast, has real numbers behind it: 5.21% batch loss over
 3 h at SF10/BW125/14 dBm, 49 dropouts, worst case 40 s, from ALGORITHM.md §9.
@@ -959,14 +996,24 @@ floor-to-floor reach inside one stairwell (§2), and the shafts are far apart,
 that is not a loss of anything that was wanted.
 
 What is added is a new way to mis-flash a board. §9's warning - a node on the
-wrong channel is deaf and silent about it - now has a second form, because a
+wrong channel is deaf and silent about it - is now the whole of it, because a
 display built for the wrong elevator carries the wrong channel *and* the wrong
-label table. If the shafts are out of earshot it simply goes deaf: `heard` at 0,
-indistinguishable from a range problem, and the first thing to check is the boot
-banner, which names the elevator. If they are within earshot it is worse than
-deaf - it joins a neighbouring shaft's flood and shows that car's floor, on a
-screen in this shaft, plausibly. Between A and C, whose label tables are
-identical, nothing on the screen distinguishes them at all. The mitigations are
-outside this file: per-elevator board labelling and the commissioning states in
-`FLASHING.md`. From the mesh side, the instrument is §10.7, and it is a bench
-instrument.
+label table, and the channel decides first. 1, 6 and 11 do not overlap, so such
+a display cannot hear its own landing's bridge at all: `heard` sits at 0, it
+never reaches the `if (gSeenAnyFrame)` gate in `floor_display.cpp`, and it
+shows the `waiting for the mesh` splash for as long as it is left there.
+
+It does not show a wrong floor, and it does not show CHECK SHAFT. CHECK SHAFT
+compares the car's learned `nFloors` against this build's label table, which
+takes a frame to arrive, and this board never gets one - which is also why the
+wrong label table it is carrying never gets to be read out loud. A CHECK SHAFT
+seen in the field is the other fault entirely, and because every display in a
+shaft holds the same table and hears the same bridge it appears on all eleven
+or twelve at once, never on one.
+
+So the symptom is indistinguishable from a range problem, and the first thing
+to check is the boot banner, which names the elevator. Between A and C, whose
+label tables are identical, the banner's elevator letter is the only thing that
+separates them. The mitigations are outside this file: per-elevator board
+labelling and the commissioning states in `FLASHING.md`. From the mesh side,
+the instrument is §10.7, and it is a bench instrument.

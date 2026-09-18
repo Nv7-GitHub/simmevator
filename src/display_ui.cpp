@@ -610,7 +610,16 @@ static void paintCommissionWords(const char *line1, const char *line2,
 // Caption strip beneath the learned count. It comes out of the digits' height
 // rather than out of the pane, so the caption cannot creep down onto the
 // CHARGE BATTERY banner when that is up.
-static const int16_t LEARN_CAPTION_H = 34;
+// Two caption lines under the learned count: the word LEARNING, then "OF n".
+//
+// The word is not decoration. Without it the pane is a bare number drawn in the
+// same seven-segment glyphs the floor number uses, and the learned span of a
+// shaft being commissioned runs 2..11 - exactly the range of real floor labels.
+// At corridor distance a passer-by reads "7" and believes the car is on 7. The
+// caption alone does not save it: "OF 11" is small enough that it is the first
+// thing to become unresolvable as you walk away, so the disambiguation has to
+// survive on its own at a distance where only the largest text still reads.
+static const int16_t LEARN_CAPTION_H = 52;
 
 static void paintLearning(const char *count, const char *caption, uint16_t ink) {
   const int digitsH = NUM_H - LEARN_CAPTION_H;
@@ -621,10 +630,15 @@ static void paintLearning(const char *count, const char *caption, uint16_t ink) 
   tft.fillRect(NUM_X, NUM_Y, NUM_W, NUM_H, COL_BG);
   sevenSegString(tft, NUM_X + (NUM_W - w) / 2, NUM_Y + (digitsH - h) / 2, h, t,
                  ink, count);
+
   tft.setTextDatum(MC_DATUM);
+  // The word takes the full ink and font 4; the fraction is supporting detail a
+  // step down the ladder, in the smaller face. See LEARN_CAPTION_H for why the
+  // word has to be the one that stays readable.
   tft.setTextColor(ink, COL_BG);
-  tft.drawString(caption, NUM_X + NUM_W / 2,
-                 NUM_Y + digitsH + LEARN_CAPTION_H / 2, 4);
+  tft.drawString("LEARNING", NUM_X + NUM_W / 2, NUM_Y + digitsH + 15, 4);
+  tft.setTextColor((ink == COL_INK_FRESH) ? COL_INK_DIM : ink, COL_BG);
+  tft.drawString(caption, NUM_X + NUM_W / 2, NUM_Y + digitsH + 40, 2);
 }
 
 static void paintArrow(bool shown, uint8_t dir, uint16_t ink) {

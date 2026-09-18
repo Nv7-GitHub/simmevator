@@ -163,9 +163,23 @@ practice rather than anything measured here - an unterminated PA reflects its
 own output back into itself.
 
 Also, from the note in `platformio.ini` next to `LORA_TX_POWER=22`: the
-receiver's absolute maximum input is around +10 dBm, and the transmitter puts
-out 22 dBm. When you bench-test the transmitter and the bridge together, keep
-the two antennas metres apart, not touching.
+SX1262's absolute maximum RF input is around **+10 dBm**, and the transmitter
+puts out 22 dBm. On a bench the only thing between those two numbers is path
+loss, and at 915 MHz free space gives:
+
+| separation | at the receiver |
+|---|---|
+| 0.10 m | +10.3 dBm - **over the absolute maximum** |
+| 0.25 m | +2.4 dBm |
+| 0.50 m | -3.6 dBm |
+| 1.00 m | -9.7 dBm - about 20 dB of margin |
+
+The crossover is 0.104 m. **Keep at least 1 m between any transmitter antenna
+and any bridge antenna whenever both are powered**, which is a minimum and not a
+target - further is always safer. Two boards side by side on a bench sit 5-10 cm
+apart, which is past the absolute maximum, and what it costs is a damaged
+receiver front end that then under-performs quietly rather than failing
+outright. The bench test in `FLASHING.md` is written around this minimum.
 
 ### 3.2 BMP390, four wires
 
@@ -467,21 +481,24 @@ What the rest of the system does while it is off, and when it comes back:
 |---|---|
 | pack off | keep the last floor for 2.5 min, dim, then at 3 min grey out with the LED amber. A CHARGE BATTERY warning stays red throughout |
 | pack back on | within a minute the STATS heartbeat arrives, the screens un-grey, and a charged pack clears the battery warning. No pairing, nothing to press |
-| until the car visits **both ends of its own shaft** | the floor shows `--` |
+| until the car visits **both ends of its own shaft** | the screens read **ANCHORING / RIDE TO BOTH ENDS** in place of the floor |
 | after that | normal |
 
-The `--` is deliberate. The transmitter keeps the learned building across a
-reboot, but not the car's position: the car may have moved and the weather will
+ANCHORING is deliberate, and it is not a fault: it is the screen saying the
+model came back out of flash intact but the car's position is not yet known, and
+it clears itself the moment the car has seen both ends. The transmitter keeps
+the learned building across a reboot, but not the car's position: the car may
+have moved and the weather will
 have shifted the pressure reference, and a floor restored one out would stay one
 out forever. Seeing both ends of the shaft fixes the position exactly. **So
 after reconnecting, ride to the lowest landing and the highest.**
 
-Which landings those are is per shaft, and this is the one place in this
-document where getting it wrong is silent. In B they are floors 1 and 10. In A
-and C the bottom end is the **basement**, not floor 1: stopping at floor 1
-leaves the seen span one landing short of the learned span, the anchor never
-locks, and the screens sit on `--` while everything else looks healthy. Either
-order works - bottom-then-top and top-then-bottom are the same operation, and
+Which landings those are is per shaft. In B they are floors 1 and 10. In A and C
+the bottom end is the **basement**, not floor 1: stopping at floor 1 leaves the
+seen span one landing short of the learned span, the anchor never locks, and the
+screens go on reading ANCHORING indefinitely. That is the failure mode to watch
+for - not a wrong floor, but a shaft where the request on the glass never goes
+away because the ride it asks for was never completed. Either order works - bottom-then-top and top-then-bottom are the same operation, and
 neither the code nor the procedure prefers one.
 
 It does not correct itself over time without that, and it does not need to - the
@@ -537,8 +554,9 @@ where each one goes.
 2. Flash it with the image for its shaft - `bridge_rx_a`, `bridge_rx_b` or
    `bridge_rx_c`. The environment carries that shaft's LoRa frequency and mesh
    channel, so a bridge flashed with the wrong image does not degrade, it hears
-   nothing at all and its displays sit grey. `FLASHING.md` has the table and the
-   upload commands; do not keep a second copy of them here.
+   nothing at all - and because its mesh channel is wrong too, its displays
+   never hear a frame either and sit on the splash screen. `FLASHING.md` has
+   the table and the upload commands; do not keep a second copy of them here.
 3. Label the board with its shaft letter before it leaves the bench, in the same
    motion as flashing it (section 7).
 4. Plug it into a USB-C 5 V adapter on floor 5 of its own shaft. It sits in
@@ -624,12 +642,28 @@ commands and the which-image-on-which-board table are in `FLASHING.md`.
 **Label every board with its shaft letter before it leaves the bench.** Not
 afterwards, not from memory - in the same motion as flashing it, while the
 programmer is still attached. The image sets both the mesh channel and the
-label table, and nothing on the outside of a CYD says which it got. A board
-carrying the wrong shaft's label table does not blank or complain: in an
-eleven-landing shaft it shows a plausible floor number for every landing and
-every one of them is off by one. The firmware's own defence against that is the
-CHECK SHAFT screen (`FLASHING.md`), but it only fires once the car has run; the
-label is what stops the board being fitted in the first place.
+label table, and nothing on the outside of a CYD says which it got.
+
+A board flashed for the wrong shaft is **deaf**, not wrong. The mesh channel is
+part of the image - 6 for A, 1 for B, 11 for C - and 1, 6 and 11 are the
+non-overlapping channels, so such a board cannot hear its landing's bridge at
+all. It never leaves `displaySplash("Simmevator", "waiting for the mesh")`: a
+screen that simply never comes up. That is the whole protection, and it is a
+good one precisely because it fails visibly: the first time the board is
+powered on its landing with the shaft running, it is obviously dead next to
+neighbours showing floors. What it cannot tell you is *which* shaft the board
+was built for, and it cannot tell you anything at all at the bench, where every
+board is out of range of its bridge and shows the same splash. The written
+letter is what tells you the shaft, which is why it goes on in the same motion
+as the flash.
+
+CHECK SHAFT is not the defence here and cannot be: a deaf board renders nothing
+to check. CHECK SHAFT is a statement about the **car**, not the display - the
+car's learned `nFloors` disagrees with the shaft's `FLOOR_LABEL_COUNT`, in
+practice a car that has never visited its lowest landing. Every display in a
+shaft carries the same label table and hears the same bridge, so CHECK SHAFT is
+all-or-nothing across the shaft: it appears on every screen at once or on none.
+One odd screen out of ten or eleven is never CHECK SHAFT.
 
 **The mesh is the constraint on where they go.** There is no WiFi network here
 and no router. Every display has to hear either its bridge or another display in
@@ -693,7 +727,7 @@ for the design.
 | 8 | Nothing on D4/D5 but the BMP390 | visual | SDA to D4, SCL to D5, not crossed |
 | 9 | Antenna attached | visual | screwed down before any power |
 | 10 | **USB unplugged** | visual | see section 3.5 |
-| 11 | **This is the right shaft's firmware** | the startup banner names the elevator, the LoRa frequency and the mesh channel it was built for | the letter matches the car this node is about to go into |
+| 11 | **This is the right shaft's firmware** | the startup banner's `[tx] txId='B' (0x42) @ 915.0 MHz` line names the elevator letter and the LoRa frequency it was built for. A car node prints no mesh channel - it has no ESP-NOW radio in its build (`tx_base` leaves `espnow_mesh.cpp` out) | the letter matches the car this node is about to go into, and the frequency is that shaft's - 913.0 for A, 915.0 for B, 917.0 for C |
 
 Then, in order:
 
@@ -726,7 +760,10 @@ and it is the one that does not announce itself.
 | 4 | The shaft has exactly one bridge | count | two bridges on one channel collide in the `origSeq` space, which the bridge console warns about but nobody is watching |
 
 Then let the car run normally for a while and walk the landings: every screen in
-the shaft should show a floor rather than CHECK SHAFT. That is the acceptance
+the shaft should show a floor rather than CHECK SHAFT - and CHECK SHAFT here
+means the car, not the board in front of you, because it appears on the whole
+shaft at once or not at all (section 7). A single screen still on the splash
+while its neighbours show floors is the mis-flash case instead. That is the acceptance
 test for the whole shaft, and it is deliberately read off the screens rather than
 off a console - during a commissioning run the car is on its pack, and section
 3.5 forbids a USB cable anywhere near the transmitter while it is. `FLASHING.md`
